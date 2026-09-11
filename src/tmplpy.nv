@@ -1,0 +1,173 @@
+// tmplpy.nv — Python's `str.format` mini-language.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// WHAT THIS DIALECT ADDS OVER printf, and why it is a module rather
+// than a flag: the FIELD. printf has one positional stream and no
+// names; `str.format` has `{0}`, `{name}`, `{name.attr}`,
+// `{name[2]}`, `{0[key]}`, a conversion (`!r`, `!s`, `!a`) and a
+// nested spec (`{:{width}}`). Those are a grammar, and the spec after
+// the `:` is what `tmplspec` already parses. So this module is the
+// field parser and nothing else — the padding and the conversions are
+// shared.
+//
+// THE SUBSCRIPT RULE IS PYTHON'S, EXACTLY, and it is the one people
+// get wrong. An unquoted subscript is a STRING key unless every
+// character in it is a digit: `{d[1]}` is the integer index 1 and
+// `{d[one]}` is the string key `"one"`, and neither takes quotes
+// because the mini-language has no quoting at all. An implementation
+// that accepted `{d['one']}` would accept a template that fails on
+// Python.
+//
+// ATTRIBUTE ACCESS IS A MAP LOOKUP HERE, and it cannot be anything
+// else: novo-lang has no reflection, so `{user.name}` walks
+// `tmplval`'s tree rather than a struct. That is the cost of this
+// dialect in this language, it is named in the README, and the
+// alternative — deriving a tree from a `Serialize` value at run time —
+// would give the library the fields a sample happened to populate and
+// silently miss the rest.
+//
+// AUTOMATIC AND EXPLICIT NUMBERING DO NOT MIX, which is Python's rule
+// and is enforced: `"{} {0}"` is refused. Rust allows the mixture and
+// `tmplrust` allows it there; the two dialects differing is the
+// dialects differing, not an inconsistency.
+//
+// NESTING IS ONE LEVEL, which is also Python's: `{:{w}}` is a field
+// whose width comes from another field, and `{:{{w}}}` is not a thing.
+// `TmplNestingTooDeep` carries the limit.
+
+use tmplerr
+use tmplspec
+use tmplval
+
+// The `!r`-style conversion applied before the spec.
+pub enum TmplConv
+    // None given.
+    TmplConvNone
+    // `!s` — the value as text.
+    TmplConvStr
+    // `!r` — the value as a programmer reads it, strings quoted.
+    TmplConvRepr
+    // `!a` — as `!r`, with every non-ASCII codepoint escaped.
+    // Python's, and useful for a log that must survive a terminal with
+    // no UTF-8.
+    TmplConvAscii
+
+// One replacement field.
+pub struct TmplField
+    // Which argument it starts from.
+    source: tmplval.TmplSource
+    // The attribute and subscript steps after that, in order.
+    path: [tmplval.TmplStep]
+    conversion: TmplConv
+    spec: tmplspec.TmplSpec
+    // Where the field's `{` is in the format string.
+    at: Int
+
+// One parsed element of a format string.
+pub enum TmplPyPiece
+    // Literal text, as a byte range into the source.
+    TmplPyText(start: Int, len: Int)
+    TmplPyField(field: TmplField)
+
+// A parsed `str.format` string.
+pub struct TmplPyFormat
+    source: Str
+    pieces: [TmplPyPiece]
+    // How many positional arguments the automatic numbering consumes.
+    positional_arity: Int
+    // Every name the string mentions, in order of first mention.
+    names: [Str]
+
+// Parse a `str.format` string.
+//
+// ```novo
+// use tmplpy
+//
+// fn main() [io]
+//     match tmplpy.parse("{user.name} scored {score:>6.2f}")
+//         Ok(f)  => println(str.from_int(tmplpy.field_count(f)))
+//         Err(_) => println("not a format string")
+// ```
+pub fn parse(source: Str) -> Result<TmplPyFormat, tmplerr.TmplError> []
+    todo("template-nv.tmplpy.parse")
+
+// Render against positional arguments and a named context.
+//
+// Both, because `"{0} {name}"` is legal and common. A caller with only
+// one kind passes an empty list or `TmplNone` for the other.
+pub fn render(f: TmplPyFormat, args: [tmplval.TmplValue],
+              context: tmplval.TmplValue) -> Result<Str, tmplerr.TmplError> []
+    todo("template-nv.tmplpy.render")
+
+// Render into a buffer the caller owns, answering the written prefix.
+pub fn render_into(out: [u8], f: TmplPyFormat, args: [tmplval.TmplValue],
+                   context: tmplval.TmplValue) -> [u8] []
+    todo("template-nv.tmplpy.render_into")
+
+// How many bytes a render will produce.
+pub fn render_len(f: TmplPyFormat, args: [tmplval.TmplValue], context: tmplval.TmplValue) -> Int []
+    todo("template-nv.tmplpy.render_len")
+
+// Parse and render in one call.
+pub fn format(source: Str, args: [tmplval.TmplValue],
+              context: tmplval.TmplValue) -> Result<Str, tmplerr.TmplError> []
+    todo("template-nv.tmplpy.format")
+
+// Parse one replacement field's interior — what is between the braces.
+//
+// Public because the nested form `{:{w}}` needs it and because a tool
+// that validates a single field, rather than a whole string, is a real
+// thing a form does.
+pub fn parse_field(text: Str, at: Int) -> Result<TmplField, tmplerr.TmplError> []
+    todo("template-nv.tmplpy.parse_field")
+
+// Parse a field path — the `user.name[2]` part, with no braces.
+//
+// The subscript rule is applied here: all digits is an index,
+// anything else is a string key.
+pub fn parse_path(text: Str, at: Int) -> Result<[tmplval.TmplStep], tmplerr.TmplError> []
+    todo("template-nv.tmplpy.parse_path")
+
+// How many replacement fields the string has.
+pub fn field_count(f: TmplPyFormat) -> Int []
+    todo("template-nv.tmplpy.field_count")
+
+// Every name the string mentions, in order of first mention, with
+// duplicates dropped.
+//
+// What a caller checks a context against before rendering.
+pub fn names_of(f: TmplPyFormat) -> [Str] []
+    todo("template-nv.tmplpy.names_of")
+
+// Whether the string uses automatic numbering — a bare `{}`.
+//
+// The fact that makes `"{} {0}"` a refusal, and the question a tool
+// asks before rewriting a string from one dialect to another.
+pub fn uses_automatic_numbering(f: TmplPyFormat) -> Bool []
+    todo("template-nv.tmplpy.uses_automatic_numbering")
+
+// Write a field back out as `str.format` source.
+//
+// From the parsed field, so a tool that rewrites one field of a
+// template leaves the rest alone.
+pub fn format_field(field: TmplField) -> Str []
+    todo("template-nv.tmplpy.format_field")
+
+// Write a literal string so that parsing it back yields itself.
+//
+// `{` becomes `{{` and `}` becomes `}}`. The call a program makes
+// before putting text it did not write into a format string, which is
+// otherwise an injection: a user's message containing `{0}` would
+// reach the argument list.
+pub fn escape_literal(text: Str) -> Str []
+    todo("template-nv.tmplpy.escape_literal")
+
+// Apply a conversion to a value, before its spec.
+//
+// Published on its own because the three conversions are exactly
+// `tmplval.as_text`, `tmplval.as_debug` and an ASCII-escaping form of
+// the second, and a caller implementing its own rendering wants the
+// same three answers.
+pub fn convert(v: tmplval.TmplValue, c: TmplConv) -> Str []
+    todo("template-nv.tmplpy.convert")

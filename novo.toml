@@ -1,0 +1,49 @@
+[package]
+name        = "template-nv"
+version     = "0.0.1"
+description = "The small, safe string-template family that is not Jinja: ${name} and {{name}} substitution with the escaping policy as a value, and three format-spec dialects — C's printf, Python's str.format mini-language and Rust's format! — parsed into ONE typed spec and rendered by one renderer into a caller's buffer.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`.  Formatting is arithmetic over bytes and a caller's own
+# buffer: nothing is read, nothing is written, and a library that
+# printed would be deciding for the program that embeds it.
+#
+# It carries `tests/embedded_probe.nv`, so the device claim is BUILT.
+# `tmplspec` is the half the claim covers — the field layout as integer
+# algebra, which is what a firmware log needs and what a `Str` return
+# cannot give it.
+layer       = "core"
+
+category    = "text"
+
+tags        = ["template", "format", "printf", "strfmt", "interpolation", "no-alloc", "embedded"]
+repository  = "https://github.com/novolang/template-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "Three format dialects, one spec type, and a renderer that writes into your buffer"
+
+[dependencies]
+# numfmt-nv, and only numfmt-nv.
+#
+# `%d` is itoa and `%.3f` is ryu, and those are not small: a printf
+# that wrote its own would be publishing a second answer to a question
+# this registry already has a measured one for.  numfmt-nv is `core`,
+# it makes its own device claim, and `digits.digit_count` /
+# `digits.digit_byte` are exactly the allocation-free shape this
+# package's embedded half is built on — so taking the dependency is
+# what makes the device claim possible rather than what threatens it.
+#
+# `^0.1.1` is an ordinary caret: 0.1.1 or any later 0.1.x.
+numfmt-nv = "^0.1.1"

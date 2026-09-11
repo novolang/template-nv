@@ -1,0 +1,112 @@
+// tmplerr.nv — what a bad format string is, and where.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A FORMAT STRING IS DATA IN THE PROGRAM, USUALLY. `"%-10s %8.3f\n"`
+// is a literal somebody wrote, and a refusal that says "bad format"
+// sends them to read it character by character. Every variant here
+// carries the byte offset into the format string, so a message can
+// quote the string and point at the `%`.
+//
+// AND SOMETIMES IT IS DATA FROM OUTSIDE, which is the other half of
+// why this module exists. A log format read from a configuration file,
+// a report template pasted into a form — those are strings a program
+// did not write, and a library that panicked on a bad one would turn a
+// configuration mistake into a crash. Every parse here answers a
+// `Result`, and nothing in this package panics on input.
+//
+// THE ARGUMENT-COUNT REFUSALS ARE THE ONES THAT MATTER. C's printf
+// cannot check them at all — `printf("%d %d", 1)` reads whatever was
+// next on the stack — and that is the single most-exploited bug class
+// in the language this dialect is ported from. Here the arguments are
+// a list, the count is checked before anything is rendered, and
+// `TmplTooFewArguments` is what comes back. `%n` is not implemented at
+// all, and its absence is a named refusal rather than a gap.
+
+// What is wrong with a format string, a field, or a call.
+pub enum TmplError
+    // The dialect's escape or field opener is at the end of the string
+    // with nothing after it: a trailing `%`, a trailing `{`.
+    TmplTruncatedField(at: Int)
+    // A `{` with no matching `}`, or the reverse.
+    TmplUnbalancedBrace(at: Int)
+    // The conversion character is not one this dialect has. The byte is
+    // carried so the message can print it.
+    TmplUnknownConversion(at: Int, conversion: Int)
+    // A flag, a width or a precision appears where the dialect does not
+    // allow it — `%#s`, a precision on an integer in Rust's dialect.
+    TmplBadFlag(at: Int, flag: Int)
+    // The width or precision digits do not parse, or are absurd. The
+    // limit is carried, because "too large" without it is not
+    // actionable.
+    TmplBadCount(at: Int, limit: Int)
+    // A field names an argument the call did not supply.
+    // `TmplTooFewArguments` is the whole-call form; this is the field
+    // that asked.
+    TmplMissingArgument(at: Int, index: Int)
+    // A field names a key the value tree does not have.
+    TmplMissingKey(at: Int, key: Str)
+    // A field indexes past the end of a list.
+    TmplIndexOutOfRange(at: Int, index: Int, length: Int)
+    // The call supplied fewer arguments than the format string
+    // consumes. Both numbers are carried.
+    TmplTooFewArguments(wanted: Int, given: Int)
+    // The call supplied arguments nothing used. A refusal rather than a
+    // warning, because an unused argument is almost always a field
+    // somebody deleted from the string and forgot to delete from the
+    // call.
+    TmplUnusedArguments(wanted: Int, given: Int)
+    // The conversion does not apply to the value it was given —
+    // `%d` on a string, `{:x}` on a float.
+    TmplWrongValueKind(at: Int, wanted: Str, found: Str)
+    // The field path does not parse: an empty attribute name, an
+    // unclosed `[`, a `.` followed by a digit where an identifier was
+    // wanted.
+    TmplBadFieldPath(at: Int)
+    // `%n` — the conversion that writes back through a pointer. Refused
+    // by name rather than absent, because a format string carrying one
+    // came from somewhere that expected it to work, and silence would
+    // be the wrong answer.
+    TmplWriteBackRefused(at: Int)
+    // The nesting of replacement fields inside a format spec is deeper
+    // than the dialect allows. Python permits exactly one level; this
+    // is what a second one meets.
+    TmplNestingTooDeep(at: Int, limit: Int)
+
+// A refusal says what it is, in one line, with the position in it.
+//
+// The `Error` impl rather than a free function, because `Result`
+// requires it: a payload that does not implement `Error` is refused at
+// the signature (SPEC § 3.4).
+//
+// ```novo
+// use tmplerr
+//
+// fn main() [io]
+//     println(TmplTooFewArguments(2, 1).message())
+// ```
+impl Error for TmplError
+    fn message(self) -> Str
+        todo("template-nv.TmplError.message")
+
+// The byte offset into the format string the refusal is at, or `-1`
+// for the refusals that are about the call rather than the string.
+pub fn offset_of(e: TmplError) -> Int []
+    todo("template-nv.tmplerr.offset_of")
+
+// Whether the refusal is about the format string or about the
+// arguments handed to it.
+//
+// The distinction a caller acts on: a bad string is a bug in the
+// program or in its configuration, and a bad argument list is a bug at
+// the call site. `true` for the string.
+pub fn is_format_fault(e: TmplError) -> Bool []
+    todo("template-nv.tmplerr.is_format_fault")
+
+// A caret line that underlines the offending byte, for printing under
+// the format string itself.
+//
+// Answers `""` where the refusal has no position. The format string is
+// passed in because this module does not keep one.
+pub fn underline(e: TmplError, format: Str) -> Str []
+    todo("template-nv.tmplerr.underline")

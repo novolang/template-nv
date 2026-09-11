@@ -1,0 +1,185 @@
+// tmplprintf.nv — C's printf, as a parser and a renderer.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// WHY PORT A FORMAT NOBODY WOULD DESIGN TODAY. Because it is written
+// down in a hundred thousand places that novo-lang has to read:
+// `strftime`-adjacent configuration, log formats in `syslog.conf` and
+// `nginx.conf`, C headers a port is being measured against, and the
+// muscle memory of everybody who has written a line of C, Python, Go
+// or Rust. A program that reads a format string from outside needs to
+// understand the one that is out there.
+//
+// THE TWO THINGS C CANNOT DO, AND THIS DOES. C's printf is variadic
+// and untyped, so `printf("%d %d", 1)` reads whatever was next on the
+// stack and `printf(user_string)` is a remote read primitive. Here the
+// arguments are a typed list: the count is checked before a byte is
+// rendered, `%d` against a string is `TmplWrongValueKind` rather than
+// a garbage number, and a format string from outside can do nothing
+// worse than fail to render.
+//
+// `%n` IS REFUSED BY NAME. It is the conversion that writes the
+// byte count back through a pointer, it is the reason format-string
+// bugs are write primitives and not only read ones, and glibc has been
+// slowly removing it for twenty years. `TmplWriteBackRefused` is what
+// a format string carrying one meets — a refusal rather than an
+// absence, because a string with `%n` in it came from somewhere that
+// expected it to work.
+//
+// THE DEVICE HALF IS THE POINT OF THIS MODULE EXISTING AT ALL. A
+// firmware log line is `"[%6d] %s"` and a UART, and the host-tier
+// calls below cannot help it: they return a `Str` or write into a
+// `[u8]`, and a Cortex-M0 with no allocator has neither. What it has
+// is `int_len` and `int_byte` — the same question numfmt-nv's `digits`
+// answers for a bare number, asked of a number inside a padded field.
+// That pair carries the `@tier(embedded)` claim, and
+// `tests/embedded_probe.nv` builds it.
+
+use tmplerr
+use tmplspec
+use tmplval
+
+// One parsed element of a printf format string.
+pub enum TmplPrintfPiece
+    // Literal text, as a byte range into the format string. Nothing is
+    // copied at parse time.
+    TmplPrintfText(start: Int, len: Int)
+    // A conversion, with its spec and where it was written.
+    TmplPrintfField(spec: tmplspec.TmplSpec, at: Int)
+    // `%%`.
+    TmplPrintfPercent
+
+// A parsed printf format string.
+pub struct TmplPrintfFormat
+    source: Str
+    pieces: [TmplPrintfPiece]
+    // How many arguments a render consumes, counting the ones `%*.*d`
+    // takes for its width and precision. Computed at parse time, which
+    // is what makes the count check free at render time.
+    arity: Int
+
+// Parse a printf format string.
+//
+// ```novo
+// use tmplprintf
+//
+// fn main() [io]
+//     match tmplprintf.parse("%-10s %8.3f")
+//         Ok(f)  => println(str.from_int(f.arity))
+//         Err(_) => println("not a format string")
+// ```
+pub fn parse(format: Str) -> Result<TmplPrintfFormat, tmplerr.TmplError> []
+    todo("template-nv.tmplprintf.parse")
+
+// Render a parsed format against a positional argument list.
+//
+// The argument count is checked first: too few is
+// `TmplTooFewArguments` and too many is `TmplUnusedArguments`, both
+// before a byte is produced. C checks neither.
+pub fn render(f: TmplPrintfFormat, args: [tmplval.TmplValue]) -> Result<Str, tmplerr.TmplError> []
+    todo("template-nv.tmplprintf.render")
+
+// Render into a buffer the caller owns, answering the written prefix.
+//
+// The `core` shape: a library returns text or takes the writer, and
+// this is the second. A short buffer is a short write, so a caller
+// that sized it with `render_len` gets everything and one that did not
+// gets a prefix rather than a panic.
+pub fn render_into(out: [u8], f: TmplPrintfFormat, args: [tmplval.TmplValue]) -> [u8] []
+    todo("template-nv.tmplprintf.render_into")
+
+// How many bytes a render will produce.
+pub fn render_len(f: TmplPrintfFormat, args: [tmplval.TmplValue]) -> Int []
+    todo("template-nv.tmplprintf.render_len")
+
+// Parse and render in one call.
+pub fn format(source: Str, args: [tmplval.TmplValue]) -> Result<Str, tmplerr.TmplError> []
+    todo("template-nv.tmplprintf.format")
+
+// How many arguments the format string consumes.
+//
+// `%*.*d` consumes three. Public because the check a caller most wants
+// to make is at the call site and before the values are built.
+pub fn arity_of(f: TmplPrintfFormat) -> Int []
+    todo("template-nv.tmplprintf.arity_of")
+
+// The conversion each argument is used under, in order.
+//
+// What a caller checks its own argument list against, and what a lint
+// over a program's format strings reads.
+pub fn argument_kinds(f: TmplPrintfFormat) -> [tmplspec.TmplKind] []
+    todo("template-nv.tmplprintf.argument_kinds")
+
+// Whether a format string is safe to render against arguments it did
+// not come with — that is, whether it came from outside.
+//
+// `false` for a string containing `%n`, and for one whose width or
+// precision is absurd enough to make a render enormous. The check to
+// run on a format string read from a configuration file, before it is
+// parsed.
+pub fn is_safe_external(format: Str) -> Bool []
+    todo("template-nv.tmplprintf.is_safe_external")
+
+// The C length modifiers — `h`, `hh`, `l`, `ll`, `z`, `j`, `t`, `L` —
+// are PARSED AND IGNORED, and this says whether one was there.
+//
+// Parsed because real format strings have them and refusing would make
+// this reader useless on the strings it exists to read; ignored
+// because novo-lang has one integer width and one float width, so
+// `%lld` and `%d` render identically. A caller porting C code wants to
+// know when a string is relying on a width this language does not
+// have, and this is how it asks.
+pub fn has_length_modifier(f: TmplPrintfFormat, index: Int) -> Bool []
+    todo("template-nv.tmplprintf.has_length_modifier")
+
+// ── the device half ──────────────────────────────────────────────────
+//
+// Integer algebra over numfmt-nv's digits and `tmplspec`'s padding: no
+// `Str`, no `[u8]`, no allocation. A firmware's log line is a loop
+// over `int_len`, writing `int_byte` to the UART.
+
+// How many bytes `%<spec>d` of an integer occupies.
+//
+// `width` and `align` are the spec's, loose, as `tmplspec`'s device
+// half takes them; `radix` is `tmplspec.radix_of`'s answer; `sign` is
+// 0, 1 or 2. The content length is the digits plus the sign plus the
+// alternate prefix, and the field is that widened — so this is the one
+// call a device makes before it starts writing.
+pub @tier(embedded)
+fn int_len(value: Int, radix: Int, width: Int, sign: Int, alternate: Bool) -> Int []
+    todo("template-nv.tmplprintf.int_len")
+
+// Byte `i` of `%<spec>d` of an integer.
+//
+// Never `-1`: unlike `tmplspec.field_byte`, this one knows where its
+// content comes from, so it answers the fill, the sign, the prefix or
+// the digit itself. That is what makes the firmware loop two lines
+// instead of six.
+//
+// `i` outside `0 .. int_len(...)` answers `-1`, which is the only
+// refusal a call with no `Result` can make and the same one
+// `digits.digit_byte` makes.
+pub @tier(embedded)
+fn int_byte(i: Int, value: Int, radix: Int, width: Int, align: Int, sign: Int, alternate: Bool,
+            fill: Int) -> Int []
+    todo("template-nv.tmplprintf.int_byte")
+
+// How many bytes a string occupies in a field, given a precision.
+//
+// The precision TRUNCATES a string — `%.3s` of `"hello"` is `"hel"` —
+// which is the part of printf people forget and the part a firmware
+// printing a fixed-width column needs. `content_len` is the string's
+// own length, which the caller knows; this answers the field's.
+pub @tier(embedded)
+fn str_field_len(content_len: Int, width: Int, precision: Int) -> Int []
+    todo("template-nv.tmplprintf.str_field_len")
+
+// The index into the string that field byte `i` corresponds to, or
+// `-1` where `i` is padding.
+//
+// The string's own bytes stay in the caller's flash, which is the
+// whole point: a device prints a constant out of ROM and never copies
+// it.
+pub @tier(embedded)
+fn str_field_index(i: Int, content_len: Int, width: Int, precision: Int, align: Int) -> Int []
+    todo("template-nv.tmplprintf.str_field_index")

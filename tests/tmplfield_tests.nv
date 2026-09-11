@@ -1,0 +1,226 @@
+// tmplfield_tests.nv — the two brace dialects, the value tree they
+// walk, and the four places they differ.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: template-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// THE DIFFERENCES ARE THE SUITE. Python's `str.format` and Rust's
+// `format!` look like the same language and are not, in four places
+// that each break a template moved between them. Each of the four is a
+// test below, and `translate` is what a caller uses instead of hoping.
+
+use std.test
+use std.list
+use tmplerr
+use tmplpy
+use tmplrust
+use tmplspec
+use tmplval
+
+@test
+fn test_the_value_tree_is_what_a_path_walks() [io]
+    let ctx = tmplval.map_of([
+        tmplval.pair("user", tmplval.map_of([tmplval.pair("name", TmplStr("ada"))])),
+        tmplval.pair("rows", tmplval.list_of([TmplInt(10), TmplInt(20)]))])
+
+    test.case("a map lookup and a list index")
+    test.assert(tmplval.get(ctx, "user") != None)
+    match tmplval.get(ctx, "rows")
+        None       => test.assert(false)
+        Some(rows) =>
+            test.assert(tmplval.len(rows) == 2)
+            test.assert(tmplval.at(rows, 1) == Some(TmplInt(20)))
+
+    test.case("a path walks both")
+    match tmplval.walk(ctx, [TmplStepAttr("user"), TmplStepAttr("name")], 0)
+        Ok(v)  => test.assert(tmplval.as_text(v) == "ada")
+        Err(_) => test.assert(false)
+
+    test.case("and says which step failed")
+    match tmplval.walk(ctx, [TmplStepAttr("user"), TmplStepAttr("age")], 0)
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                TmplMissingKey(_, key) => test.assert(key == "age")
+                _                      => test.assert(false)
+
+    test.case("an index past the end names the length")
+    match tmplval.walk(ctx, [TmplStepAttr("rows"), TmplStepIndex(7)], 0)
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                TmplIndexOutOfRange(_, index, length) =>
+                    test.assert(index == 7)
+                    test.assert(length == 2)
+                _                                     => test.assert(false)
+
+    test.case("the keys a context has, in the order it was built")
+    test.assert(tmplval.keys(ctx) == ["user", "rows"])
+
+@test
+fn test_the_value_kinds_convert_the_way_a_reader_expects() [io]
+    test.case("text and debug differ on strings, and only on strings")
+    test.assert(tmplval.as_text(TmplStr("a")) == "a")
+    test.assert(tmplval.as_debug(TmplStr("a")) == "\"a\"")
+    test.assert(tmplval.as_text(TmplInt(3)) == "3")
+    test.assert(tmplval.as_debug(TmplInt(3)) == "3")
+
+    test.case("the absent value renders empty and refuses a number")
+    test.assert(tmplval.as_text(TmplNone) == "")
+    match tmplval.as_int(TmplNone, 0)
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("a bool is not a number, deliberately")
+    test.assert(tmplval.is_numeric(TmplInt(1)))
+    test.assert(tmplval.is_numeric(TmplBool(true)) == false)
+    test.assert(tmplval.kind_name(TmplBool(true)) == "bool")
+
+    test.case("an integer widens to a float and nothing else does")
+    test.assert(tmplval.as_float(TmplInt(3), 0) == Ok(3.0))
+    match tmplval.as_float(TmplStr("3"), 0)
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_pythons_subscript_rule_is_all_digits_or_a_string_key() [io]
+    // The rule people get wrong: `{d[1]}` is an index and `{d[one]}`
+    // is a key, and neither takes quotes because the mini-language has
+    // no quoting at all.
+    test.case("all digits is an index")
+    match tmplpy.parse_path("d[1]", 0)
+        Err(_) => test.assert(false)
+        Ok(p)  =>
+            test.assert(list.len(p) == 2)
+            match p[1]
+                TmplStepIndex(i) => test.assert(i == 1)
+                _                => test.assert(false)
+
+    test.case("anything else is a string key")
+    match tmplpy.parse_path("d[one]", 0)
+        Err(_) => test.assert(false)
+        Ok(p)  =>
+            match p[1]
+                TmplStepKey(k) => test.assert(k == "one")
+                _              => test.assert(false)
+
+    test.case("and an unclosed subscript is refused where it opened")
+    match tmplpy.parse_path("d[1", 0)
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                TmplBadFieldPath(_) => test.assert(true)
+                _                   => test.assert(false)
+
+@test
+fn test_a_python_field_is_a_source_a_path_a_conversion_and_a_spec() [io]
+    match tmplpy.parse("{user.name!r:>10} scored {score:6.2f}")
+        Err(_) => test.assert(false)
+        Ok(f)  =>
+            test.case("two fields, and the names they mention")
+            test.assert(tmplpy.field_count(f) == 2)
+            test.assert(tmplpy.names_of(f) == ["user", "score"])
+            test.assert(tmplpy.uses_automatic_numbering(f) == false)
+
+            test.case("and the field prints back as it was written")
+            match tmplpy.parse_field("user.name!r:>10", 0)
+                Ok(field) =>
+                    test.assert(tmplpy.format_field(field) == "{user.name!r:>10}")
+                    match field.conversion
+                        TmplConvRepr => test.assert(true)
+                        _            => test.assert(false)
+                    test.assert(tmplspec.width_of(field.spec) == 10)
+                Err(_)    => test.assert(false)
+
+    test.case("the three conversions are the value's three renderings")
+    test.assert(tmplpy.convert(TmplStr("a"), TmplConvStr) == "a")
+    test.assert(tmplpy.convert(TmplStr("a"), TmplConvRepr) == "\"a\"")
+    test.assert(tmplpy.convert(TmplStr("é"), TmplConvAscii) == "\"\\u00e9\"")
+
+@test
+fn test_python_refuses_the_mixture_that_rust_allows() [io]
+    // The rule that makes these two dialects and not one.
+    test.case("automatic and explicit numbering do not mix in Python")
+    match tmplpy.parse("{} {0}")
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(tmplerr.is_format_fault(e))
+
+    test.case("and do mix in Rust")
+    match tmplrust.parse("{} {0}")
+        Ok(f)  => test.assert(tmplrust.field_count(f) == 2)
+        Err(_) => test.assert(false)
+
+@test
+fn test_the_brace_dialects_render_against_positions_and_names() [io]
+    let ctx = tmplval.map_of([tmplval.pair("name", TmplStr("ada")),
+                              tmplval.pair("width", TmplInt(8))])
+
+    test.case("Python, with a positional and a named field")
+    match tmplpy.parse("{0}: {name}")
+        Err(_) => test.assert(false)
+        Ok(f)  =>
+            test.assert(tmplpy.render(f, [TmplInt(1)], ctx) == Ok("1: ada"))
+            test.assert(tmplpy.render_len(f, [TmplInt(1)], ctx) == 6)
+            let out: [u8] = []
+            test.assert(list.len(tmplpy.render_into(out, f, [TmplInt(1)], ctx)) >= 0)
+
+    test.case("Rust, whose inline capture becomes a context lookup here")
+    match tmplrust.parse("{name:>width\$}")
+        Err(_) => test.assert(false)
+        Ok(f)  =>
+            test.assert(tmplrust.names_of(f) == ["name", "width"])
+            test.assert(tmplrust.render(f, [], ctx) == Ok("     ada"))
+            test.assert(tmplrust.render_len(f, [], ctx) == 8)
+            let out: [u8] = []
+            test.assert(list.len(tmplrust.render_into(out, f, [], ctx)) >= 0)
+
+    test.case("and both have a one-call form")
+    test.assert(tmplpy.format("{name}", [], ctx) == Ok("ada"))
+    test.assert(tmplrust.format("{name}", [], ctx) == Ok("ada"))
+
+@test
+fn test_a_literal_brace_is_doubled_in_both() [io]
+    let ctx = tmplval.map_of([])
+
+    test.case("doubling is how a literal brace is written")
+    test.assert(tmplpy.format("{{}}", [], ctx) == Ok("{}"))
+    test.assert(tmplrust.format("{{}}", [], ctx) == Ok("{}"))
+
+    test.case("and text from outside is escaped before it goes into a format string")
+    test.assert(tmplpy.escape_literal("{0} wins") == "{{0}} wins")
+    test.assert(tmplrust.escape_literal("{0} wins") == "{{0}} wins")
+
+@test
+fn test_a_translation_refuses_rather_than_approximating() [io]
+    test.case("printf to Rust, where both can spell it")
+    test.assert(tmplrust.is_translatable("%-10s", TmplDialectPrintf, TmplDialectRust))
+    test.assert(tmplrust.translate("%-10s", TmplDialectPrintf, TmplDialectRust)
+                == Ok("{:<10}"))
+
+    test.case("and a grouping separator, which Rust cannot")
+    test.assert(tmplrust.is_translatable("{:,d}", TmplDialectPython,
+                                         TmplDialectRust) == false)
+    match tmplrust.translate("{:,d}", TmplDialectPython, TmplDialectRust)
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("the specs of a string can be read without rendering it")
+    match tmplrust.specs_of("%-10s %8.3f", TmplDialectPrintf)
+        Ok(specs) => test.assert(list.len(specs) == 2)
+        Err(_)    => test.assert(false)
+
+@test
+fn test_nesting_is_one_level_deep() [io]
+    test.case("a width from another field is legal")
+    match tmplpy.parse("{v:{w}}")
+        Ok(f)  => test.assert(tmplpy.field_count(f) == 1)
+        Err(_) => test.assert(false)
+
+    test.case("and a second level carries the limit it broke")
+    match tmplpy.parse("{v:{w:{x}}}")
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                TmplNestingTooDeep(_, limit) => test.assert(limit == 1)
+                _                            => test.assert(false)

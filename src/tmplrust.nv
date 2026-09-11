@@ -1,0 +1,146 @@
+// tmplrust.nv — Rust's `format!` spec, as the third dialect.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// WHY A THIRD DIALECT WHEN THE SECOND LOOKS THE SAME. Because it is
+// not the same, in four places that each break a template moved
+// between them:
+//
+//   * `{:?}` — the debug conversion is a TYPE letter here and a
+//     conversion prefix (`!r`) in Python. A Python parser reading
+//     `{:?}` sees an unknown type; a Rust parser reading `{!r}` sees a
+//     malformed field.
+//   * `{:width$}` and `{:.prec$}` — a count from a NAMED argument, with
+//     a `$` suffix. Python spells the same idea `{:{width}}`, nested.
+//   * `{} {0}` is legal in Rust and refused in Python.
+//   * There is no grouping separator and no `%` conversion, and `{:e}`
+//     means something narrower than Python's.
+//
+// So a template written for one and rendered by the other is either a
+// parse failure or, worse, a different document. Two parsers and one
+// spec is what makes the difference visible: `tmplspec.check_for` is
+// the call that says which spec a dialect can spell.
+//
+// WHAT THIS PORT DOES NOT DO, and the reason is the language rather
+// than the scope. Rust's `format!` is a macro: it captures identifiers
+// from the enclosing scope (`format!("{name}")` with no argument), it
+// checks arity at compile time, and `{:?}` dispatches on a trait the
+// compiler implements for you. None of the three is available to a
+// library in this language — there is no macro, no compile-time
+// argument check, and no derive — so the inline capture becomes a
+// lookup in a context the caller built, and the arity check happens at
+// render time with a `Result`. The SYNTAX is ported; the mechanism is
+// not, and it cannot be.
+
+use tmplerr
+use tmplspec
+use tmplval
+
+// One parsed element of a `format!` string.
+pub enum TmplRustPiece
+    // Literal text, as a byte range into the source.
+    TmplRustText(start: Int, len: Int)
+    TmplRustField(field: TmplRustArg)
+
+// One replacement field.
+//
+// Flatter than `tmplpy.TmplField` because Rust's is flatter: there is
+// no conversion prefix — `{:?}` is a type letter — and there is no
+// path, because `format!` captures a whole value and the walking is
+// done by the caller's own expression before the macro sees it.
+pub struct TmplRustArg
+    source: tmplval.TmplSource
+    spec: tmplspec.TmplSpec
+    // Where the field's `{` is in the format string.
+    at: Int
+
+// A parsed `format!` string.
+pub struct TmplRustFormat
+    source: Str
+    pieces: [TmplRustPiece]
+    positional_arity: Int
+    // The names the string captures inline — `format!("{name}")` —
+    // which in this port are looked up in a context rather than in a
+    // scope.
+    names: [Str]
+
+// Parse a `format!` string.
+//
+// ```novo
+// use tmplrust
+//
+// fn main() [io]
+//     match tmplrust.parse("{name:>width\$}")
+//         Ok(f)  => println(str.from_int(tmplrust.field_count(f)))
+//         Err(_) => println("not a format string")
+// ```
+pub fn parse(source: Str) -> Result<TmplRustFormat, tmplerr.TmplError> []
+    todo("template-nv.tmplrust.parse")
+
+// Render against positional arguments and a named context.
+//
+// The context is where `format!`'s inline capture goes: a scope this
+// library cannot see becomes a map the caller built.
+pub fn render(f: TmplRustFormat, args: [tmplval.TmplValue],
+              context: tmplval.TmplValue) -> Result<Str, tmplerr.TmplError> []
+    todo("template-nv.tmplrust.render")
+
+// Render into a buffer the caller owns, answering the written prefix.
+pub fn render_into(out: [u8], f: TmplRustFormat, args: [tmplval.TmplValue],
+                   context: tmplval.TmplValue) -> [u8] []
+    todo("template-nv.tmplrust.render_into")
+
+// How many bytes a render will produce.
+pub fn render_len(f: TmplRustFormat, args: [tmplval.TmplValue],
+                  context: tmplval.TmplValue) -> Int []
+    todo("template-nv.tmplrust.render_len")
+
+// Parse and render in one call.
+pub fn format(source: Str, args: [tmplval.TmplValue],
+              context: tmplval.TmplValue) -> Result<Str, tmplerr.TmplError> []
+    todo("template-nv.tmplrust.format")
+
+// How many replacement fields the string has.
+pub fn field_count(f: TmplRustFormat) -> Int []
+    todo("template-nv.tmplrust.field_count")
+
+// Every name the string captures inline, in order of first mention.
+pub fn names_of(f: TmplRustFormat) -> [Str] []
+    todo("template-nv.tmplrust.names_of")
+
+// Write a literal string so that parsing it back yields itself.
+pub fn escape_literal(text: Str) -> Str []
+    todo("template-nv.tmplrust.escape_literal")
+
+// ── the translation between the three ────────────────────────────────
+//
+// The one thing three parsers and one spec make possible, and the
+// reason it is worth publishing rather than leaving to a caller: the
+// spec is already shared, so a translation is a reparse and a reprint
+// rather than a rewriting of the padding rules.
+
+// Rewrite a format string from one dialect into another.
+//
+// Refuses rather than approximating: a `%` conversion has no Rust
+// spelling, a grouping separator has no C one, and a template that
+// silently lost either would render a different document. The refusals
+// `tmplspec.check_for` answers are the ones this returns.
+pub fn translate(source: Str, from: tmplspec.TmplDialect,
+                 to: tmplspec.TmplDialect) -> Result<Str, tmplerr.TmplError> []
+    todo("template-nv.tmplrust.translate")
+
+// Whether a translation would be exact, without performing it.
+//
+// The question a tool asks before offering to convert a project's
+// format strings, so it can list the ones it will not touch.
+pub fn is_translatable(source: Str, from: tmplspec.TmplDialect, to: tmplspec.TmplDialect) -> Bool []
+    todo("template-nv.tmplrust.is_translatable")
+
+// Every spec a format string contains, in order, whichever dialect it
+// is in.
+//
+// The seam a translation is built on, and the call a caller uses to
+// inspect a string without rendering it.
+pub fn specs_of(source: Str,
+                dialect: tmplspec.TmplDialect) -> Result<[tmplspec.TmplSpec], tmplerr.TmplError> []
+    todo("template-nv.tmplrust.specs_of")

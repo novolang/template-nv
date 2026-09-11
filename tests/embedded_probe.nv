@@ -1,0 +1,140 @@
+// embedded_probe.nv — this package's device claim, as a program that
+// either builds for a Cortex-M or does not.
+//
+// It is not a test. `scripts/shard_audit.sh`'s `core-embedded` row
+// copies it and the modules it names into a package of its own and
+// runs
+//
+//   novo build --target=nrf52-qemu src/probe.nv
+//
+// which produces a real Cortex-M4 ELF or fails.
+//
+// WHAT THE CLAIM COVERS: the field arithmetic in `tmplspec` and the
+// printf renderer in `tmplprintf`, and nothing else.
+//
+// Firmware logs need this. A sensor's log line is `"[%6d] %s"` and a
+// UART, and the host-tier calls in this package cannot help it: each
+// of them answers text, or fills a byte buffer, and a device with no
+// allocator has neither. What it has is the same question numfmt-nv's
+// `digits` answers for a bare number — how many bytes, and what is
+// byte `i`? — asked of a number inside a padded field. That pair is
+// the claim, and this probe is it.
+//
+// WHY THE RENDERER ANSWERS BYTES AND NOT A BUFFER. `bytes.set_u8` is
+// not on the embedded tier's admitted surface, so `render_into` is an
+// `@tier(app)` call whatever its buffer belongs to. The device shape
+// is therefore a loop the FIRMWARE owns:
+//
+//   for i in 0 .. tmplprintf.int_len(v, 10, 6, 0, false)
+//       hal.uart.write_byte(tmplprintf.int_byte(i, v, 10, 6, 1, 0,
+//                                               false, 32))
+//
+// which writes into the caller's buffer in the only sense a device
+// has one. numfmt-nv's `digits` draws exactly this line first and this
+// package follows it, so a reader who knows one knows the other.
+//
+// WHAT IS NOT CLAIMED. `tmplsub`, `tmplpy` and `tmplrust` all build
+// lists of pieces and return `Str`, by construction and not by
+// accident, and a device that needs them needs a heap. Three of the
+// package's six modules are for a machine with one, and the README
+// says which half a reader gets.
+//
+// WHAT THE TIER ACTUALLY CHECKS AT 0.0.1 is narrower than it will be.
+// Every body under `src/` is a `todo()`, so what links today is the
+// SIGNATURES and the types — integers in and out. There is no padding
+// arithmetic in the binary yet, so this probe does not prove the
+// renderer is allocation-free; it proves that nothing in the shape of
+// the surface needs an allocator or a host. Keeping it green once the
+// bodies land is a named cost of the implementation step.
+
+use tmplprintf
+use tmplspec
+
+// The alignment codes the device half takes, as a firmware spells
+// them: an `Int` rather than `TmplAlign`, because this is the call a
+// `@value`-tier caller makes.
+const ALIGN_LEFT: Int = 0
+const ALIGN_RIGHT: Int = 1
+const ALIGN_CENTRE: Int = 2
+const SIGN_MINUS_ONLY: Int = 0
+const SIGN_PLUS: Int = 1
+const SPACE: Int = 32
+const RADIX_DEC: Int = 10
+
+// Every answer this probe checks, folded into one number so a single
+// comparison decides the run. A firmware image has one line of output;
+// making it depend on all of them is what stops a passing run from
+// meaning "the first call linked".
+@tier(embedded)
+fn score() -> Int
+    var n = 0
+    // The field, widened to the width and never truncated by it.
+    if tmplspec.field_len(6, 3) == 6
+        n = n + 1
+    if tmplspec.field_len(2, 5) == 5
+        n = n + 1
+    // The padding, in both directions.
+    if tmplspec.pad_before(6, 3, ALIGN_RIGHT) == 3
+        n = n + 1
+    if tmplspec.pad_after(6, 3, ALIGN_RIGHT) == 0
+        n = n + 1
+    if tmplspec.pad_before(6, 3, ALIGN_LEFT) == 0
+        n = n + 1
+    // Centring puts the odd byte on the right, which is the rule every
+    // other implementation keeps.
+    if tmplspec.pad_before(6, 3, ALIGN_CENTRE) == 1
+        n = n + 1
+    if tmplspec.pad_after(6, 3, ALIGN_CENTRE) == 2
+        n = n + 1
+    // Byte 0 of a right-aligned field is fill; the content index says
+    // where the caller's own source takes over.
+    if tmplspec.field_byte(0, 6, 3, ALIGN_RIGHT, SPACE) == SPACE
+        n = n + 1
+    if tmplspec.content_index(0, 6, 3, ALIGN_RIGHT) == 0 - 1
+        n = n + 1
+    if tmplspec.content_index(3, 6, 3, ALIGN_RIGHT) == 0
+        n = n + 1
+    // The sign rule: a negative always writes `-`, a non-negative
+    // writes what the policy says.
+    if tmplspec.sign_byte(true, SIGN_MINUS_ONLY) == 45
+        n = n + 1
+    if tmplspec.sign_byte(false, SIGN_MINUS_ONLY) == 0 - 1
+        n = n + 1
+    if tmplspec.sign_byte(false, SIGN_PLUS) == 43
+        n = n + 1
+    // A space pads one byte; a multi-byte fill costs more, and a
+    // device asks before it writes.
+    if tmplspec.fill_len(SPACE) == 1
+        n = n + 1
+    // The printf half: the whole of a firmware log field, in two
+    // calls.
+    let width = tmplprintf.int_len(42, RADIX_DEC, 6, SIGN_MINUS_ONLY, false)
+    if width == 6
+        n = n + 1
+    if tmplprintf.int_byte(5, 42, RADIX_DEC, 6, ALIGN_RIGHT, SIGN_MINUS_ONLY,
+                           false, SPACE) == 50
+        n = n + 1
+    if tmplprintf.int_byte(9, 42, RADIX_DEC, 6, ALIGN_RIGHT, SIGN_MINUS_ONLY,
+                           false, SPACE) == 0 - 1
+        n = n + 1
+    // A string field, whose bytes stay in the caller's flash.
+    if tmplprintf.str_field_len(5, 8, 3) == 8
+        n = n + 1
+    if tmplprintf.str_field_index(0, 5, 8, 3, ALIGN_LEFT) == 0
+        n = n + 1
+    n
+
+@tier(rt)
+fn main() [hw, time]
+    bsp.board.init()
+    // 19 is the number of checks in `score` on the path a linked build
+    // takes. The count is printed on a failure rather than only
+    // compared, so a device that disagrees with the host says HOW MANY
+    // it lost and a bisect has somewhere to start.
+    let n = score()
+    if n == 19
+        hal.uart.write("PASS: template-embedded\n")
+    else
+        hal.uart.write("FAIL: template-embedded\n")
+    loop
+        core.rt.sleep_ms(1000)

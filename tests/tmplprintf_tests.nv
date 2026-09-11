@@ -1,0 +1,185 @@
+// tmplprintf_tests.nv — C's printf, and the two bug classes this port
+// does not have.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: template-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// THE VECTORS ARE GLIBC'S OUTPUT. Every expected string below is what
+// `printf(3)` produces for the same format and value on a glibc
+// system, which is the oracle this dialect is ported against. The
+// cases are the ones where implementations differ by one byte: a
+// negative number under the zero flag, a precision on a string, an
+// alternate form on zero, and a width smaller than the content.
+
+use std.test
+use std.list
+use tmplerr
+use tmplprintf
+use tmplspec
+
+@test
+fn test_the_ordinary_conversions_produce_what_glibc_produces() [io]
+    test.case("a left-aligned string and a fixed float")
+    test.assert(tmplprintf.format("%-10s|", [TmplStr("ada")]) == Ok("ada       |"))
+    test.assert(tmplprintf.format("%8.3f", [TmplFloat(3.14159)]) == Ok("   3.142"))
+
+    test.case("hex, octal and binary, with and without the alternate form")
+    test.assert(tmplprintf.format("%x", [TmplInt(255)]) == Ok("ff"))
+    test.assert(tmplprintf.format("%X", [TmplInt(255)]) == Ok("FF"))
+    test.assert(tmplprintf.format("%#x", [TmplInt(255)]) == Ok("0xff"))
+    test.assert(tmplprintf.format("%o", [TmplInt(8)]) == Ok("10"))
+
+    test.case("the alternate form on zero writes no prefix, which is glibc's rule")
+    test.assert(tmplprintf.format("%#x", [TmplInt(0)]) == Ok("0"))
+
+    test.case("a literal per-cent takes no argument")
+    test.assert(tmplprintf.format("100%%", []) == Ok("100%"))
+
+@test
+fn test_the_padding_cases_implementations_differ_on() [io]
+    test.case("the zero flag pads after the sign")
+    test.assert(tmplprintf.format("%08d", [TmplInt(0 - 42)]) == Ok("-0000042"))
+
+    test.case("and the minus flag beats it, because a left-aligned zero-fill is a space")
+    test.assert(tmplprintf.format("%-08d|", [TmplInt(42)]) == Ok("42      |"))
+
+    test.case("a width smaller than the content grows the field rather than truncating")
+    test.assert(tmplprintf.format("%2d", [TmplInt(123456)]) == Ok("123456"))
+
+    test.case("a precision on a string truncates it, which is the part people forget")
+    test.assert(tmplprintf.format("%.3s", [TmplStr("hello")]) == Ok("hel"))
+    test.assert(tmplprintf.format("%-6.3s|", [TmplStr("hello")]) == Ok("hel   |"))
+
+    test.case("the space and plus flags on a non-negative number")
+    test.assert(tmplprintf.format("% d", [TmplInt(42)]) == Ok(" 42"))
+    test.assert(tmplprintf.format("%+d", [TmplInt(42)]) == Ok("+42"))
+
+@test
+fn test_the_width_and_precision_can_come_from_arguments() [io]
+    test.case("%*.*f takes three arguments for one value")
+    match tmplprintf.parse("%*.*f")
+        Err(_) => test.assert(false)
+        Ok(f)  =>
+            test.assert(tmplprintf.arity_of(f) == 3)
+            test.assert(f.arity == 3)
+            test.assert(tmplprintf.render(f, [TmplInt(8), TmplInt(3),
+                                              TmplFloat(3.14159)]) == Ok("   3.142"))
+
+@test
+fn test_the_argument_count_is_checked_before_a_byte_is_written() [io]
+    // The thing C cannot do: `printf("%d %d", 1)` reads whatever was
+    // next on the stack.
+    test.case("too few arguments carries both numbers")
+    match tmplprintf.format("%d %d", [TmplInt(1)])
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                TmplTooFewArguments(wanted, given) =>
+                    test.assert(wanted == 2)
+                    test.assert(given == 1)
+                _                                  => test.assert(false)
+            test.assert(tmplerr.is_format_fault(e) == false)
+
+    test.case("and so does an argument nothing used")
+    match tmplprintf.format("%d", [TmplInt(1), TmplInt(2)])
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                TmplUnusedArguments(_, _) => test.assert(true)
+                _                         => test.assert(false)
+
+    test.case("a conversion that does not apply names both kinds")
+    match tmplprintf.format("%d", [TmplStr("ada")])
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                TmplWrongValueKind(_, wanted, found) =>
+                    test.assert(found == "str")
+                    test.assert(wanted != "")
+                _                                    => test.assert(false)
+
+@test
+fn test_the_write_back_conversion_is_refused_by_name() [io]
+    // `%n` is the reason format-string bugs are write primitives. It
+    // is refused rather than absent, because a string carrying one
+    // came from somewhere that expected it to work.
+    test.case("%n is a named refusal")
+    match tmplprintf.parse("wrote %n bytes")
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                TmplWriteBackRefused(at) => test.assert(at == 6)
+                _                        => test.assert(false)
+
+    test.case("and a format string from outside is checked before it is parsed")
+    test.assert(tmplprintf.is_safe_external("%d items") == true)
+    test.assert(tmplprintf.is_safe_external("%n") == false)
+    test.assert(tmplprintf.is_safe_external("%999999999d") == false)
+
+@test
+fn test_the_length_modifiers_are_parsed_and_ignored() [io]
+    // Parsed because real format strings have them; ignored because
+    // this language has one integer width. A caller porting C wants to
+    // know when a string relied on a width that is not here.
+    test.case("%lld renders as %d does")
+    test.assert(tmplprintf.format("%lld", [TmplInt(42)]) == Ok("42"))
+
+    test.case("and the fact that a modifier was there is readable")
+    match tmplprintf.parse("%lld %d")
+        Err(_) => test.assert(false)
+        Ok(f)  =>
+            test.assert(tmplprintf.has_length_modifier(f, 0))
+            test.assert(tmplprintf.has_length_modifier(f, 1) == false)
+
+@test
+fn test_a_format_string_can_be_inspected_without_rendering_it() [io]
+    match tmplprintf.parse("%-10s %8.3f")
+        Err(_) => test.assert(false)
+        Ok(f)  =>
+            test.case("the conversions each argument is used under")
+            let kinds = tmplprintf.argument_kinds(f)
+            test.assert(list.len(kinds) == 2)
+            match kinds[0]
+                TmplKindStr => test.assert(true)
+                _           => test.assert(false)
+            match kinds[1]
+                TmplKindFixed => test.assert(true)
+                _             => test.assert(false)
+
+            test.case("and the length of a render, before it is produced")
+            let args = [TmplStr("ada"), TmplFloat(3.14159)]
+            test.assert(tmplprintf.render_len(f, args) == 19)
+            let out: [u8] = []
+            test.assert(list.len(tmplprintf.render_into(out, f, args)) >= 0)
+
+@test
+fn test_the_device_half_is_the_same_renderer_in_integers() [io]
+    // What a firmware log line actually calls, and the answers have to
+    // agree byte for byte with what `%6d` produces above.
+    test.case("the field is six bytes wide for a two-digit number")
+    test.assert(tmplprintf.int_len(42, 10, 6, 0, false) == 6)
+
+    test.case("a negative number spends a byte on its sign")
+    test.assert(tmplprintf.int_len(0 - 42, 10, 6, 0, false) == 6)
+    test.assert(tmplprintf.int_len(0 - 42, 10, 0, 0, false) == 3)
+
+    test.case("the alternate form costs its prefix")
+    test.assert(tmplprintf.int_len(255, 16, 0, 0, true) == 4)
+
+    test.case("and the bytes come out right-aligned, one call each")
+    test.assert(tmplprintf.int_byte(0, 42, 10, 6, 1, 0, false, 32) == 32)
+    test.assert(tmplprintf.int_byte(4, 42, 10, 6, 1, 0, false, 32) == 52)
+    test.assert(tmplprintf.int_byte(5, 42, 10, 6, 1, 0, false, 32) == 50)
+    test.assert(tmplprintf.int_byte(9, 42, 10, 6, 1, 0, false, 32) == 0 - 1)
+
+    test.case("a string field truncates on the precision and widens on the width")
+    test.assert(tmplprintf.str_field_len(5, 8, 3) == 8)
+    test.assert(tmplprintf.str_field_len(5, 0, 3) == 3)
+    test.assert(tmplprintf.str_field_index(0, 5, 8, 3, 0) == 0)
+    test.assert(tmplprintf.str_field_index(3, 5, 8, 3, 0) == 0 - 1)
+
+    test.case("and the host spec agrees with the integers the device passes")
+    match tmplspec.parse_spec("6d", TmplDialectPrintf, 0)
+        Ok(s)  => test.assert(tmplspec.width_of(s) == 6)
+        Err(_) => test.assert(false)

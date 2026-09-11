@@ -1,0 +1,197 @@
+// tmplsub.nv — `${name}` and `{{name}}`, and nothing else.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE SMALLEST USEFUL TEMPLATE, AND THE REASON IT IS WORTH HAVING.
+// Python's `string.Template` is about eighty lines and it is in the
+// standard library, because the thing people reach a full engine for
+// is usually this: a message with three names in it, a configuration
+// value with `${HOME}` in it, a subject line. A caller who takes Jinja
+// for that has taken an expression language, a control-flow grammar
+// and an auto-escaping policy, all of which can go wrong, to do a
+// lookup and a concatenation.
+//
+// THERE IS NO CONTROL FLOW HERE. No `{% if %}`, no loops, no filters,
+// no includes, no expressions. A name is looked up and its text is
+// substituted. That is the whole language, and it is the line between
+// this package and tera-nv: the moment a template needs a condition it
+// needs tera-nv, and the moment it does not, this is cheaper to read,
+// cheaper to audit and impossible to make recurse.
+//
+// THE SUBSTITUTION DOES NOT RESCAN ITS OWN OUTPUT, and that is a fixed
+// bug rather than a feature. A value containing `${x}` is inserted
+// verbatim; it is not looked up again. tera-nv's interface notes the
+// opposite behaviour as a defect in what it graduated from, and this
+// package does not repeat it — which also means a user-supplied value
+// cannot reach into the context.
+//
+// THE ESCAPING POLICY IS A VALUE AND IT HAS NO DEFAULT-ON HTML MODE.
+// `TmplEscape` is about the TEMPLATE's own syntax — how to write a
+// literal `$` — and not about the value's destination. Escaping for
+// HTML is html-nv's `escape`, applied by the caller to the value
+// before it goes in, because a template package that auto-escaped
+// would be guessing that its output is a web page. tera-nv, whose
+// output usually IS a web page, escapes by default and says so.
+
+use tmplerr
+use tmplval
+
+// Which sigil a template uses.
+pub enum TmplSyntax
+    // `${name}` and the bare `$name`, which is `string.Template`'s.
+    // The bare form ends at the first byte that cannot continue an
+    // identifier, which is why `${name}` exists at all: `$fooer` is
+    // one name and `${foo}er` is a name followed by two letters.
+    TmplSyntaxDollar
+    // `{{ name }}`, with the surrounding whitespace trimmed. The
+    // handlebars and Go spelling, and the one a person recognises from
+    // a hundred other tools.
+    TmplSyntaxBrace
+    // `{name}`, the single-brace form. Included because `str.format`'s
+    // syntax without its mini-language is a real dialect — `.NET`'s
+    // and a dozen configuration formats' — and because a caller
+    // reading templates from users will meet it.
+    TmplSyntaxSingleBrace
+
+// How a literal sigil is written in the template.
+pub enum TmplEscape
+    // No escape at all: every sigil opens a field, and a literal one
+    // cannot be written. Refused by `parse` rather than silently
+    // accepted, because a template that cannot express its own
+    // delimiter is a template somebody will hit.
+    TmplEscapeNone
+    // Doubling: `$$` is a `$`, `{{{{` is `{{`. `string.Template`'s and
+    // `str.format`'s.
+    TmplEscapeDouble
+    // A backslash: `\$` is a `$`. Familiar, and worse — it means a
+    // Windows path in a template has to be written twice, which is a
+    // bug report every tool that chose it has received.
+    TmplEscapeBackslash
+
+// What to do with a name the context does not have.
+pub enum TmplMissing
+    // Refuse, naming the key. The default, because a template with a
+    // typo in a name is a template that silently renders a hole.
+    TmplMissingRefuse
+    // Substitute nothing.
+    TmplMissingEmpty
+    // Leave the field as it was written, so a second pass with a
+    // second context can fill it. What a layered configuration does,
+    // and the only reason this is not a two-value enum.
+    TmplMissingKeep
+
+// The policy a render runs under.
+pub struct TmplPolicy
+    syntax: TmplSyntax
+    escape: TmplEscape
+    missing: TmplMissing
+    // Whether a bare `$name` without braces is recognised. Ignored
+    // except under `TmplSyntaxDollar`.
+    allow_bare: Bool
+    // The most bytes a render will produce, or `0` for no bound. A
+    // template is usually a program's own string, but where it is not,
+    // a bound is the difference between a large substitution and a
+    // memory exhaustion.
+    max_output: Int
+
+// One piece of a parsed template: either literal text or a name.
+pub enum TmplPiece
+    // A byte range into the template string, not a copy. A template
+    // parsed once and rendered a thousand times copies its literal
+    // text out of the original each time, and never into an
+    // intermediate.
+    TmplPieceText(start: Int, len: Int)
+    // A name to look up, with where it was written so a refusal can
+    // point at it.
+    TmplPieceName(name: Str, at: Int)
+
+// A parsed template.
+pub struct TmplTemplate
+    // The template string itself, which the text pieces index into.
+    source: Str
+    pieces: [TmplPiece]
+    policy: TmplPolicy
+
+// `string.Template`'s arrangement: `${name}`, `$name`, `$$` for a
+// literal, and a refusal on a missing key.
+pub fn default_policy() -> TmplPolicy []
+    todo("template-nv.tmplsub.default_policy")
+
+// The `{{ name }}` arrangement, with doubled braces for a literal.
+pub fn brace_policy() -> TmplPolicy []
+    todo("template-nv.tmplsub.brace_policy")
+
+// Parse a template under a policy.
+//
+// ```novo
+// use tmplsub
+//
+// fn main() [io]
+//     match tmplsub.parse("hello \${name}", tmplsub.default_policy())
+//         Ok(t)  => println(str.from_int(tmplsub.name_count(t)))
+//         Err(_) => println("not a template")
+// ```
+pub fn parse(source: Str, policy: TmplPolicy) -> Result<TmplTemplate, tmplerr.TmplError> []
+    todo("template-nv.tmplsub.parse")
+
+// Render a parsed template against a value tree.
+pub fn render(t: TmplTemplate, context: tmplval.TmplValue) -> Result<Str, tmplerr.TmplError> []
+    todo("template-nv.tmplsub.render")
+
+// Render into a buffer the caller owns, answering the written prefix.
+//
+// The shape a program that renders a thousand messages uses: one
+// buffer, reused. A buffer too short is a short write and not a panic,
+// and `render_len` is how a caller sizes it.
+pub fn render_into(out: [u8], t: TmplTemplate, context: tmplval.TmplValue) -> [u8] []
+    todo("template-nv.tmplsub.render_into")
+
+// How many bytes a render will produce, without producing them.
+pub fn render_len(t: TmplTemplate, context: tmplval.TmplValue) -> Int []
+    todo("template-nv.tmplsub.render_len")
+
+// Parse and render in one call.
+//
+// The convenience nine callers in ten want, and the one to avoid in a
+// loop: a template rendered more than once should be parsed once.
+pub fn substitute(source: Str, context: tmplval.TmplValue,
+                  policy: TmplPolicy) -> Result<Str, tmplerr.TmplError> []
+    todo("template-nv.tmplsub.substitute")
+
+// Every name the template mentions, in the order it mentions them,
+// with duplicates kept.
+//
+// What a tool lists to tell somebody which values a template needs
+// before they run it.
+pub fn names(t: TmplTemplate) -> [Str] []
+    todo("template-nv.tmplsub.names")
+
+// How many name fields the template has.
+pub fn name_count(t: TmplTemplate) -> Int []
+    todo("template-nv.tmplsub.name_count")
+
+// The names the template mentions that the context does not have.
+//
+// The check a caller runs BEFORE rendering, so a report that would
+// fail at the last field fails before the first one is written.
+pub fn missing_names(t: TmplTemplate, context: tmplval.TmplValue) -> [Str] []
+    todo("template-nv.tmplsub.missing_names")
+
+// Whether a name is one this syntax can express.
+//
+// Identifier characters only — letters, digits and underscore, not
+// starting with a digit. A dotted path is NOT a name here: `${a.b}` is
+// refused rather than walked, because a substitution language that
+// walked paths would be halfway to an expression language, and the
+// package that walks paths is `tmplpy`.
+pub fn is_valid_name(name: Str) -> Bool []
+    todo("template-nv.tmplsub.is_valid_name")
+
+// Write a literal string so that rendering it back produces itself.
+//
+// The inverse of the escape policy, for a caller BUILDING a template
+// out of text it did not write. Without it, a program that puts a
+// user's message into a template it then renders has created an
+// injection where a `${` in the message reaches the context.
+pub fn escape_literal(text: Str, policy: TmplPolicy) -> Str []
+    todo("template-nv.tmplsub.escape_literal")

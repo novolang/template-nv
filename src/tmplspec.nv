@@ -1,0 +1,353 @@
+// tmplspec.nv — one format spec, shared by three dialects.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THIS MODULE HOLDS THE LOAD-BEARING INTERFACE, `TmplSpec`, and it is
+// the answer to the question a reader asks first: why are C's printf,
+// Python's `str.format` and Rust's `format!` one package rather than
+// three?
+//
+// Because they are three SYNTAXES over one semantics. Line them up:
+//
+//     %-08.3f          printf
+//     {:<08.3f}        Python
+//     {:<08.3}         Rust
+//
+// and every one of them says: left-align, pad with zeros, at least
+// eight columns wide, three digits after the point, fixed notation.
+// The spellings differ — where the fill goes, whether the alignment
+// character is a flag or a suffix, whether the type letter is required
+// — and the DECISION is identical. So the parsers are three and the
+// renderer is one, and `TmplSpec` is the value between them.
+//
+// WHAT THAT BUYS, CONCRETELY. A program that reads a format from a
+// configuration file in whichever dialect its users know, and renders
+// it the same way. A test suite for the renderer that is written once
+// and covers all three. And an implementation where the twenty edge
+// cases of padding — a negative number under zero-fill, a fill
+// character wider than one byte, a precision that truncates a string —
+// are decided in one place instead of three places that will diverge.
+//
+// WHAT IT COSTS, SAID PLAINLY. `TmplSpec` is the UNION of what the
+// three can express, so a spec can hold a combination its own dialect
+// cannot spell. `check_for` is the function that says so, and every
+// parser calls it, so a spec that came out of one dialect's parser is
+// always spellable in that dialect. What it does not do is refuse a
+// spec a caller BUILT by hand and then asked a dialect to print.
+//
+// THE DEVICE HALF IS THE ARITHMETIC AT THE BOTTOM OF THIS FILE.
+// A firmware log line is `"[%6d] %s\n"` and a UART: there is no
+// allocator, so there is no `Str` to build and no `[u8]` to build it
+// in. What there is, is the same question numfmt-nv's `digits` answers
+// for a number — how many bytes, and what is byte `i`? — asked of a
+// padded field. `field_len` and `pad_byte` are that, in integers, and
+// the probe builds them for a Cortex-M4.
+
+use tmplerr
+
+// Which syntax a spec was written in, or is to be written in.
+pub enum TmplDialect
+    // C's `%-08.3f`: flags, then width, then `.precision`, then the
+    // conversion letter.
+    TmplDialectPrintf
+    // Python's `{:<08.3f}`: `[[fill]align][sign][#][0][width][grouping]
+    // [.precision][type]`.
+    TmplDialectPython
+    // Rust's `{:<08.3}`: Python's shape, with a different set of type
+    // letters and no grouping.
+    TmplDialectRust
+
+// How a value sits inside a field wider than it is.
+pub enum TmplAlign
+    // The dialect's own default for the value's kind: right for
+    // numbers, left for everything else. Kept as a value rather than
+    // resolved at parse time, because `format_spec` has to print back
+    // what was written and an absent alignment is not a `<`.
+    TmplAlignDefault
+    TmplAlignLeft
+    TmplAlignRight
+    TmplAlignCenter
+    // `=` in Python: the padding goes between the sign and the digits,
+    // so `-0000042` rather than `000000-42`. What `%08d` means in C,
+    // which is why C's zero flag sets this rather than
+    // `TmplAlignRight`.
+    TmplAlignAfterSign
+
+// What is printed in front of a non-negative number.
+pub enum TmplSign
+    // Nothing. `-` still appears on a negative.
+    TmplSignMinus
+    // `+`.
+    TmplSignPlus
+    // A space, which is C's `% d` and Python's `' '`. Useful for
+    // columns of numbers that must line up whether or not they are
+    // negative.
+    TmplSignSpace
+
+// The conversion: what the value is turned into before it is padded.
+pub enum TmplKind
+    // No type letter was given. Rust's ordinary `{}`, Python's `{}`.
+    // The renderer picks by the value's own kind.
+    TmplKindDefault
+    // `s` — the value as text.
+    TmplKindStr
+    // `?` in Rust, `!r` in Python: the value as a programmer reads it,
+    // with strings quoted.
+    TmplKindDebug
+    // `d` / `i`.
+    TmplKindDec
+    // `x`, and `X` for the upper-case form.
+    TmplKindHexLower
+    TmplKindHexUpper
+    // `o`.
+    TmplKindOct
+    // `b`.
+    TmplKindBin
+    // `c` — the integer as one character.
+    TmplKindChar
+    // `f` / `F`: fixed point.
+    TmplKindFixed
+    // `e` and `E`: scientific.
+    TmplKindExpLower
+    TmplKindExpUpper
+    // `g` and `G`: whichever of fixed and scientific is shorter.
+    TmplKindGeneralLower
+    TmplKindGeneralUpper
+    // `%`: the number times a hundred, with a per-cent sign.
+    TmplKindPercent
+
+// Where a width or a precision comes from.
+//
+// Three sources rather than an `Int` with a sentinel, because `%.*f`
+// and `{:.prec$}` are real and common — a column width computed at run
+// time is the ordinary case in a table, not an exotic one.
+pub enum TmplCount
+    // Not given.
+    TmplCountAbsent
+    // Written in the format string.
+    TmplCountFixed(value: Int)
+    // `%*d` in C, `{:.*}` in Rust: taken from the next positional
+    // argument, in order.
+    TmplCountFromNext
+    // `{:width$}` in Rust, `{:{w}}` in Python: taken from a named or
+    // numbered argument.
+    TmplCountFromArg(index: Int)
+    // `{:.{p}}` where the argument is named rather than numbered.
+    TmplCountFromName(name: Str)
+
+// One format spec: the decision, with no syntax in it.
+//
+// THE LOAD-BEARING INTERFACE. Three parsers produce it and one
+// renderer consumes it.
+pub struct TmplSpec
+    // The byte to pad with. A codepoint rather than a byte, because
+    // Python and Rust both allow any character and a table padded with
+    // `·` is a real thing people write. 32 — a space — is the default.
+    fill: Int
+    align: TmplAlign
+    sign: TmplSign
+    // `#`: the alternate form. `0x` before hex, `0b` before binary,
+    // `0o` before octal, and a decimal point on a float that would not
+    // otherwise have one.
+    alternate: Bool
+    // Whether the zero flag was written. Kept separately from
+    // `fill`/`align` even though it sets both, because `format_spec`
+    // prints `%08d` back as `%08d` rather than as `%08d` with an
+    // explicit `0` fill and an `=` alignment, which no dialect can
+    // spell.
+    zero_pad: Bool
+    // The minimum field width.
+    width: TmplCount
+    // Digits after the point for a float; a maximum length for a
+    // string, which is the part people forget `%.3s` does.
+    precision: TmplCount
+    // Thousands separators: `,` or `_` in Python, 0 for none. Rust and
+    // C have none, and `check_for` says so.
+    grouping: Int
+    kind: TmplKind
+
+// A spec that formats a value the way the dialect would with no spec
+// at all.
+pub fn default_spec() -> TmplSpec []
+    todo("template-nv.tmplspec.default_spec")
+
+// Parse the spec part of a field, in a named dialect.
+//
+// `text` is what is between the `:` and the `}` in Python and Rust,
+// and what is between the `%` and the conversion letter in C, with the
+// letter included. The offset is where `text` starts in the whole
+// format string, so a refusal points into the string a person wrote
+// rather than into a substring they never saw.
+//
+// ```novo
+// use tmplspec
+//
+// fn main() [io]
+//     match tmplspec.parse_spec("<08.3f", TmplDialectPython, 0)
+//         Ok(s)  => println(tmplspec.format_spec(s, TmplDialectPrintf))
+//         Err(_) => println("not a format spec")
+// ```
+pub fn parse_spec(text: Str, dialect: TmplDialect,
+                  at: Int) -> Result<TmplSpec, tmplerr.TmplError> []
+    todo("template-nv.tmplspec.parse_spec")
+
+// Write a spec back out in a dialect.
+//
+// The translation this package exists to make possible: a spec parsed
+// from `%-8.3f` prints as `<8.3` in Rust's dialect. `check_for` first,
+// because a spec the dialect cannot spell has no honest printing.
+pub fn format_spec(s: TmplSpec, dialect: TmplDialect) -> Str []
+    todo("template-nv.tmplspec.format_spec")
+
+// Whether a dialect can express this spec, and what it cannot.
+//
+// The cost of one spec type for three syntaxes, made visible. Rust has
+// no grouping separator and no `%` conversion; C has no centring and
+// no fill character other than a space or a zero; Python has no `?`.
+// An empty list is a spec the dialect can spell exactly.
+pub fn check_for(s: TmplSpec, dialect: TmplDialect) -> [tmplerr.TmplError] []
+    todo("template-nv.tmplspec.check_for")
+
+// The spec with every count resolved to a fixed number.
+//
+// `%*.*f` with the arguments 8 and 3 becomes width 8, precision 3. The
+// renderer works on resolved specs only, which is what keeps the
+// argument walk in one place instead of inside the padding
+// arithmetic.
+pub fn resolve(s: TmplSpec, width: Int, precision: Int) -> TmplSpec []
+    todo("template-nv.tmplspec.resolve")
+
+// How many arguments the spec's counts consume from the positional
+// list: 0, 1 or 2.
+//
+// What a caller counts arguments with before rendering, and the reason
+// `TmplTooFewArguments` can be answered before a byte is written.
+pub fn count_arity(s: TmplSpec) -> Int []
+    todo("template-nv.tmplspec.count_arity")
+
+// The width as a number, or `-1` where it is absent or unresolved.
+pub fn width_of(s: TmplSpec) -> Int []
+    todo("template-nv.tmplspec.width_of")
+
+// The precision as a number, or `-1` where it is absent or unresolved.
+pub fn precision_of(s: TmplSpec) -> Int []
+    todo("template-nv.tmplspec.precision_of")
+
+// The alignment the renderer will actually use, with
+// `TmplAlignDefault` resolved against the conversion.
+//
+// Right for the numeric kinds, left for the rest — and
+// `TmplAlignAfterSign` where `zero_pad` is set, which is the rule that
+// makes `%08d` of `-42` come out `-0000042`.
+pub fn effective_align(s: TmplSpec) -> TmplAlign []
+    todo("template-nv.tmplspec.effective_align")
+
+// Whether the conversion produces a number, which is what decides the
+// default alignment and whether a sign is written at all.
+pub fn is_numeric(k: TmplKind) -> Bool []
+    todo("template-nv.tmplspec.is_numeric")
+
+// The radix a conversion counts in: 10, 16, 8, 2, or 0 where the
+// conversion is not an integer one.
+//
+// Published because it is what a caller passes numfmt-nv's `digits`,
+// and a second table of the same four numbers is a second place for
+// them to be wrong.
+pub fn radix_of(k: TmplKind) -> Int []
+    todo("template-nv.tmplspec.radix_of")
+
+// The alternate-form prefix a conversion writes: `"0x"`, `"0b"`,
+// `"0o"`, or `""`.
+pub fn alternate_prefix(s: TmplSpec) -> Str []
+    todo("template-nv.tmplspec.alternate_prefix")
+
+// ── the device half ──────────────────────────────────────────────────
+//
+// Integer algebra, every one of them: no `Str`, no `[u8]`, no
+// allocation and no `Result`. This is the same arrangement numfmt-nv's
+// `digits` uses and for the same reason — `bytes.set_u8` is not on the
+// embedded tier's admitted surface, so a firmware does not write into
+// a buffer, it asks for byte `i` and pushes it out of the UART.
+//
+// A firmware log's whole use of this package is a loop:
+//
+//   let n = tmplspec.field_len(width, content, fill_len)
+//   for i in 0 .. n
+//       hal.uart.write_byte(tmplspec.field_byte(i, width, content,
+//                                               pad_before, fill))
+//
+// with `content` coming from `digits.digit_count` and the bytes from
+// `digits.digit_byte`. Nothing between the two allocates.
+
+// How many bytes a field occupies: the content, widened to the width.
+//
+// `content_len` is how long the converted value is — `digit_count`
+// plus a sign, or a string's length already truncated by the
+// precision. A width smaller than the content does not truncate:
+// every dialect grows the field instead, which is the rule that stops
+// a log line losing the end of a number.
+pub @tier(embedded)
+fn field_len(width: Int, content_len: Int) -> Int []
+    todo("template-nv.tmplspec.field_len")
+
+// How many fill bytes go BEFORE the content.
+//
+// `align` is `0` for left, `1` for right, `2` for centre and `3` for
+// after-sign — an `Int` rather than `TmplAlign`, because this is the
+// call a `@value`-tier caller makes and the enum is the host's
+// spelling of the same choice. `effective_align` is what converts one
+// to the other on the host side.
+//
+// Centring puts the ODD byte on the right, which is Python's rule and
+// Rust's; a caller that split it the other way would centre a column
+// one byte differently from every other implementation.
+pub @tier(embedded)
+fn pad_before(width: Int, content_len: Int, align: Int) -> Int []
+    todo("template-nv.tmplspec.pad_before")
+
+// How many fill bytes go after the content.
+pub @tier(embedded)
+fn pad_after(width: Int, content_len: Int, align: Int) -> Int []
+    todo("template-nv.tmplspec.pad_after")
+
+// Byte `i` of a padded field, given the content's own bytes.
+//
+// Answers the fill byte where `i` lands in the padding and `-1` where
+// it lands in the content — which is the caller's signal to ask its
+// own source, `digits.digit_byte` or a byte out of flash, for
+// `i - pad_before`. Two calls rather than a callback, because a
+// lambda that becomes a value at the embedded tier is refused and a
+// device has no closure to pass.
+pub @tier(embedded)
+fn field_byte(i: Int, width: Int, content_len: Int, align: Int, fill: Int) -> Int []
+    todo("template-nv.tmplspec.field_byte")
+
+// The index into the content that field byte `i` corresponds to, or
+// `-1` where `i` is padding.
+//
+// The other half of `field_byte`, published so the loop above reads as
+// two questions about the same index rather than as arithmetic the
+// caller repeats.
+pub @tier(embedded)
+fn content_index(i: Int, width: Int, content_len: Int, align: Int) -> Int []
+    todo("template-nv.tmplspec.content_index")
+
+// The sign byte a number writes, or `-1` for none.
+//
+// `sign` is `0` for minus-only, `1` for plus and `2` for space. The
+// rule is small and everybody gets it slightly wrong: a negative
+// number writes `-` under every policy, and a non-negative one writes
+// nothing, `+` or a space.
+pub @tier(embedded)
+fn sign_byte(is_negative: Bool, sign: Int) -> Int []
+    todo("template-nv.tmplspec.sign_byte")
+
+// How many bytes the fill character occupies in UTF-8.
+//
+// One for a space or a zero, and up to four for the `·` somebody put
+// in a table. A device passing a fill above 127 is a device with a
+// multi-byte pad, and this is the call that tells it how many bytes
+// that costs before it starts writing.
+pub @tier(embedded)
+fn fill_len(fill: Int) -> Int []
+    todo("template-nv.tmplspec.fill_len")

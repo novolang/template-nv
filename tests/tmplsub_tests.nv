@@ -1,0 +1,150 @@
+// tmplsub_tests.nv — `${name}`, and the four things it deliberately
+// will not do.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: template-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// THE OMISSIONS ARE THE SUITE. A substitution language that works is
+// twenty lines; what makes this one worth publishing is that it does
+// not rescan its own output, does not walk paths, does not escape for
+// HTML on its own initiative, and does not render a missing name as a
+// hole. Each of those is a test below, and each is a bug somebody has
+// shipped in a template library.
+
+use std.test
+use std.list
+use tmplerr
+use tmplsub
+use tmplval
+
+@test
+fn test_a_name_is_looked_up_and_its_text_put_in() [io]
+    let ctx = tmplval.map_of([tmplval.pair("name", TmplStr("ada")),
+                              tmplval.pair("n", TmplInt(3))])
+
+    test.case("the braced form")
+    test.assert(tmplsub.substitute("hello \${name}", ctx, tmplsub.default_policy())
+                == Ok("hello ada"))
+
+    test.case("the bare form, which ends at the first byte that cannot continue a name")
+    test.assert(tmplsub.substitute("\$name!", ctx, tmplsub.default_policy())
+                == Ok("ada!"))
+
+    test.case("which is why the braces exist at all")
+    test.assert(tmplsub.substitute("\${name}er", ctx, tmplsub.default_policy())
+                == Ok("adaer"))
+
+    test.case("a number renders as its digits")
+    test.assert(tmplsub.substitute("\${n} of them", ctx, tmplsub.default_policy())
+                == Ok("3 of them"))
+
+    test.case("and the brace syntax is the same language with another sigil")
+    test.assert(tmplsub.substitute("hello {{name}}", ctx, tmplsub.brace_policy())
+                == Ok("hello ada"))
+
+@test
+fn test_a_parsed_template_can_be_rendered_many_times() [io]
+    match tmplsub.parse("\${greeting}, \${name}", tmplsub.default_policy())
+        Err(_) => test.assert(false)
+        Ok(t)  =>
+            test.case("the names are readable before anything is rendered")
+            test.assert(tmplsub.name_count(t) == 2)
+            test.assert(tmplsub.names(t) == ["greeting", "name"])
+
+            test.case("and so is what a context is missing")
+            let half = tmplval.map_of([tmplval.pair("name", TmplStr("ada"))])
+            test.assert(tmplsub.missing_names(t, half) == ["greeting"])
+
+            test.case("a complete context renders")
+            let full = tmplval.with(half, "greeting", TmplStr("hello"))
+            test.assert(tmplsub.render(t, full) == Ok("hello, ada"))
+            test.assert(tmplsub.render_len(t, full) == 10)
+
+            test.case("and renders into a buffer the caller owns")
+            let out: [u8] = []
+            test.assert(list.len(tmplsub.render_into(out, t, full)) >= 0)
+
+@test
+fn test_the_output_is_not_rescanned() [io]
+    // A fixed bug rather than a feature: a value containing a sigil is
+    // inserted verbatim, so a user-supplied value cannot reach into
+    // the context.
+    test.case("a value that looks like a field is text and nothing more")
+    let ctx = tmplval.map_of([tmplval.pair("a", TmplStr("\${b}")),
+                              tmplval.pair("b", TmplStr("secret"))])
+    test.assert(tmplsub.substitute("\${a}", ctx, tmplsub.default_policy())
+                == Ok("\${b}"))
+
+@test
+fn test_a_missing_name_is_a_decision_and_not_a_hole() [io]
+    let empty = tmplval.map_of([])
+
+    test.case("refusing is the default, and it names the key")
+    match tmplsub.substitute("\${nope}", empty, tmplsub.default_policy())
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                TmplMissingKey(_, key) => test.assert(key == "nope")
+                _                      => test.assert(false)
+            test.assert(e.message() != "")
+
+    test.case("and the other two policies are for callers who mean them")
+    let keep = TmplPolicy { syntax: TmplSyntaxDollar, escape: TmplEscapeDouble,
+                            missing: TmplMissingKeep, allow_bare: true, max_output: 0 }
+    test.assert(tmplsub.substitute("\${nope}", empty, keep) == Ok("\${nope}"))
+    let blank = TmplPolicy { syntax: TmplSyntaxDollar, escape: TmplEscapeDouble,
+                             missing: TmplMissingEmpty, allow_bare: true, max_output: 0 }
+    test.assert(tmplsub.substitute("[\${nope}]", empty, blank) == Ok("[]"))
+
+@test
+fn test_a_literal_sigil_is_written_by_doubling_it() [io]
+    let ctx = tmplval.map_of([tmplval.pair("n", TmplInt(5))])
+
+    test.case("\$\$ is a dollar")
+    test.assert(tmplsub.substitute("\$\$\${n}", ctx, tmplsub.default_policy()) == Ok("\$5"))
+
+    test.case("and a template built out of text somebody else wrote escapes first")
+    // Without this a user's message containing `${` reaches the
+    // context, which is the injection this call exists to close.
+    let hostile = "total: \${secret}"
+    let safe = tmplsub.escape_literal(hostile, tmplsub.default_policy())
+    test.assert(safe == "total: \$\${secret}")
+    test.assert(tmplsub.substitute(safe, ctx, tmplsub.default_policy()) == Ok(hostile))
+
+@test
+fn test_a_name_is_an_identifier_and_never_a_path() [io]
+    // A substitution language that walked paths would be halfway to an
+    // expression language. The package that walks paths is `tmplpy`.
+    test.case("identifiers are names")
+    test.assert(tmplsub.is_valid_name("user_id"))
+    test.assert(tmplsub.is_valid_name("a1"))
+
+    test.case("and these are not")
+    test.assert(tmplsub.is_valid_name("a.b") == false)
+    test.assert(tmplsub.is_valid_name("1a") == false)
+    test.assert(tmplsub.is_valid_name("") == false)
+
+    test.case("so a dotted field is refused rather than walked")
+    match tmplsub.parse("\${a.b}", tmplsub.default_policy())
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(tmplerr.is_format_fault(e))
+
+@test
+fn test_an_unbalanced_field_is_refused_at_its_own_byte() [io]
+    test.case("a trailing sigil")
+    match tmplsub.parse("cost: \$", tmplsub.default_policy())
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                TmplTruncatedField(at) => test.assert(at == 6)
+                _                      => test.assert(false)
+
+    test.case("an unclosed brace")
+    match tmplsub.parse("\${name", tmplsub.default_policy())
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                TmplUnbalancedBrace(_) => test.assert(true)
+                TmplTruncatedField(_)  => test.assert(true)
+                _                      => test.assert(false)

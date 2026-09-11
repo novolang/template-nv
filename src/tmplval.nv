@@ -1,0 +1,188 @@
+// tmplval.nv — the values a template is rendered against.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// ONE VALUE TYPE FOR ALL THREE DIALECTS, for the same reason there is
+// one spec type: `printf("%d", 42)`, `"{}".format(42)` and
+// `format!("{}", 42)` differ in how the 42 is NAMED, not in what it
+// is. So a caller builds a list or a map of these once and renders it
+// through whichever dialect its format string is in.
+//
+// THE TREE IS SHALLOW ON PURPOSE. Python's mini-language walks
+// attributes and indices — `{user.name}`, `{rows[0].total}` — and this
+// is what it walks. What it is NOT is a reflection facility: novo-lang
+// has none, so a caller builds the tree from its own structs by hand,
+// one line per field. That is the cost, it is real, and the
+// alternative — a run-time walk over a `Serialize` value — would give
+// a library the names a sample happened to have and never the ones it
+// did not.
+//
+// FLOATS ARE `Float` AND NOT A DECIMAL. A template that formats money
+// through `%.2f` is formatting a binary float, with everything that
+// implies about 0.145 rounding down. Saying so here is more useful
+// than a warning nobody reads: a program that needs exact decimals
+// formats the integer number of cents.
+//
+// AND THERE IS NO `TmplValue` FOR A FUNCTION. Jinja calls things;
+// this family substitutes them. `tera-nv` is where a filter goes, and
+// the line between the two packages is exactly this type not having
+// that variant.
+
+use tmplerr
+
+// A value a field can name.
+pub enum TmplValue
+    // The absent value. Renders as `""` under `TmplKindStr` and is a
+    // refusal under every numeric conversion, because a silent zero in
+    // a report is a wrong number nobody can see is wrong.
+    TmplNone
+    TmplBool(value: Bool)
+    TmplInt(value: Int)
+    TmplFloat(value: Float)
+    TmplStr(value: Str)
+    // A sequence, indexed by `{0[2]}` and `{name[2]}`.
+    TmplList(items: [TmplValue])
+    // A mapping, walked by `{name.key}` and `{name[key]}`. A list of
+    // pairs rather than a hash: a template has a handful of keys, the
+    // order is what a caller built, and a stable order is what makes a
+    // rendering reproducible.
+    TmplMap(entries: [TmplPair])
+
+// One entry of a `TmplMap`.
+pub struct TmplPair
+    key: Str
+    value: TmplValue
+
+// One step of a field path.
+pub enum TmplStep
+    // `.name` — Python's attribute access, which on this tree is a map
+    // lookup. The two are one operation here because there is no
+    // reflection to make them differ.
+    TmplStepAttr(name: Str)
+    // `[3]` where the subscript is all digits.
+    TmplStepIndex(index: Int)
+    // `[name]` where it is not. Python's rule exactly: an unquoted
+    // subscript is a STRING key unless every character is a digit,
+    // which is why `{d[1]}` and `{d[one]}` are different lookups and
+    // neither takes quotes.
+    TmplStepKey(key: Str)
+
+// Which argument a field starts from, before the path is walked.
+pub enum TmplSource
+    // `{}` — the next positional argument, in order. Mixing this with
+    // explicit numbering is what Python refuses and Rust allows, and
+    // the parsers say which.
+    TmplSourceNext
+    // `{0}`.
+    TmplSourceIndex(index: Int)
+    // `{name}`.
+    TmplSourceName(name: Str)
+
+// Walk a path from a value, or say which step failed.
+//
+// ```novo
+// use tmplval
+//
+// fn main() [io]
+//     let v = tmplval.map_of([tmplval.pair("name", TmplStr("ada"))])
+//     match tmplval.walk(v, [TmplStepAttr("name")], 0)
+//         Ok(found) => println(tmplval.as_text(found))
+//         Err(_)    => println("no such field")
+// ```
+pub fn walk(root: TmplValue, path: [TmplStep], at: Int) -> Result<TmplValue, tmplerr.TmplError> []
+    todo("template-nv.tmplval.walk")
+
+// Look one key up in a map, or `?`.
+pub fn get(v: TmplValue, key: Str) -> ?TmplValue []
+    todo("template-nv.tmplval.get")
+
+// Index one element of a list, or `?`.
+pub fn at(v: TmplValue, index: Int) -> ?TmplValue []
+    todo("template-nv.tmplval.at")
+
+// How many elements a list or map has; `0` for everything else.
+pub fn len(v: TmplValue) -> Int []
+    todo("template-nv.tmplval.len")
+
+// The kind's name, for a refusal's message: `"int"`, `"str"`,
+// `"list"`.
+//
+// A string rather than an enum, because the only thing done with it is
+// printing, and `TmplWrongValueKind` carries two of them.
+pub fn kind_name(v: TmplValue) -> Str []
+    todo("template-nv.tmplval.kind_name")
+
+// Whether the value is a number a numeric conversion may be applied
+// to.
+//
+// `TmplBool` is NOT one, deliberately. C's printf would take a bool as
+// an integer and print 1; a template that did so would render a
+// checkbox as a digit, and the refusal is more useful than the
+// coercion.
+pub fn is_numeric(v: TmplValue) -> Bool []
+    todo("template-nv.tmplval.is_numeric")
+
+// The value as text under the default conversion, with no spec
+// applied.
+//
+// What `{}` does to it: a string is itself, a number is its digits, a
+// bool is `"true"` or `"false"`, `TmplNone` is `""`, and a list or a
+// map is a bracketed form meant for a person reading a diagnostic
+// rather than for a document.
+pub fn as_text(v: TmplValue) -> Str []
+    todo("template-nv.tmplval.as_text")
+
+// The value as text under the debug conversion — `!r` and `{:?}`.
+//
+// Strings come back quoted with their escapes written, which is the
+// whole difference and the reason the conversion exists: `""` and
+// `" "` are indistinguishable in a log line otherwise.
+pub fn as_debug(v: TmplValue) -> Str []
+    todo("template-nv.tmplval.as_debug")
+
+// The value as an integer, or a refusal naming the kind it actually
+// was.
+pub fn as_int(v: TmplValue, at: Int) -> Result<Int, tmplerr.TmplError> []
+    todo("template-nv.tmplval.as_int")
+
+// The value as a float, or a refusal.
+//
+// An `Int` widens; nothing else does. An integer that cannot be
+// represented exactly as a `Float` still widens, and `%.0f` of a large
+// one will print a number that is not the one that went in — which is
+// IEEE-754 and not this package, and is why `as_int` exists beside
+// this.
+pub fn as_float(v: TmplValue, at: Int) -> Result<Float, tmplerr.TmplError> []
+    todo("template-nv.tmplval.as_float")
+
+// ── building a tree ──────────────────────────────────────────────────
+//
+// Constructors rather than a literal syntax, because a caller builds
+// these by hand and `tmplval.map_of([tmplval.pair("n", TmplInt(1))])`
+// is the line they write.
+
+// One map entry.
+pub fn pair(key: Str, value: TmplValue) -> TmplPair []
+    todo("template-nv.tmplval.pair")
+
+// A map from its entries. Later entries win over earlier ones with the
+// same key, which is what makes a caller's own default layer work.
+pub fn map_of(entries: [TmplPair]) -> TmplValue []
+    todo("template-nv.tmplval.map_of")
+
+// A list from its items.
+pub fn list_of(items: [TmplValue]) -> TmplValue []
+    todo("template-nv.tmplval.list_of")
+
+// A map with one entry added or replaced.
+//
+// The incremental form, for a caller assembling a context in a loop.
+pub fn with(v: TmplValue, key: Str, value: TmplValue) -> TmplValue []
+    todo("template-nv.tmplval.with")
+
+// The keys a map has, in the order they were built.
+//
+// What a caller lists to report "this template names `total` and your
+// context has `totals`", which is the refusal people actually hit.
+pub fn keys(v: TmplValue) -> [Str] []
+    todo("template-nv.tmplval.keys")

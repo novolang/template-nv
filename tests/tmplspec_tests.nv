@@ -1,0 +1,213 @@
+// tmplspec_tests.nv — one spec, three spellings, and the padding
+// arithmetic under all of them.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: template-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// THE SUITE IS THE CLAIM. This package's argument is that
+// `%-08.3f`, `{:<08.3f}` and `{:<08.3}` are one decision written three
+// ways, and the first test is that claim as an assertion: parse each
+// in its own dialect and compare the specs. Everything after it is
+// what the one renderer then does with them, checked against glibc's
+// printf and CPython's `str.format` for the cases where padding is
+// easy to get one byte wrong.
+
+use std.test
+use std.list
+use tmplerr
+use tmplspec
+
+@test
+fn test_three_dialects_parse_to_one_spec() [io]
+    test.case("left-aligned, zero-filled, eight wide, three decimals")
+    match tmplspec.parse_spec("-08.3f", TmplDialectPrintf, 0)
+        Err(_) => test.assert(false)
+        Ok(c)  =>
+            match tmplspec.parse_spec("<08.3f", TmplDialectPython, 0)
+                Err(_) => test.assert(false)
+                Ok(p)  =>
+                    match tmplspec.parse_spec("<08.3", TmplDialectRust, 0)
+                        Err(_) => test.assert(false)
+                        Ok(r)  =>
+                            test.assert(tmplspec.width_of(c) == 8)
+                            test.assert(tmplspec.width_of(p) == 8)
+                            test.assert(tmplspec.width_of(r) == 8)
+                            test.assert(tmplspec.precision_of(c) == 3)
+                            test.assert(tmplspec.precision_of(p) == 3)
+                            test.assert(tmplspec.precision_of(r) == 3)
+                            test.assert(c.zero_pad)
+                            test.assert(p.zero_pad)
+                            test.assert(r.zero_pad)
+
+    test.case("and one spec prints back in whichever dialect is asked for")
+    match tmplspec.parse_spec("-10s", TmplDialectPrintf, 0)
+        Ok(s)  =>
+            test.assert(tmplspec.format_spec(s, TmplDialectPrintf) == "-10s")
+            test.assert(tmplspec.format_spec(s, TmplDialectPython) == "<10s")
+        Err(_) => test.assert(false)
+
+@test
+fn test_a_dialect_says_what_it_cannot_spell() [io]
+    // The cost of one spec type for three syntaxes, made visible.
+    test.case("Python's grouping separator has no C spelling")
+    match tmplspec.parse_spec(",d", TmplDialectPython, 0)
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            test.assert(s.grouping == 44)
+            test.assert(list.len(tmplspec.check_for(s, TmplDialectPython)) == 0)
+            test.assert(list.len(tmplspec.check_for(s, TmplDialectPrintf)) == 1)
+
+    test.case("and C has no centring")
+    match tmplspec.parse_spec("^10s", TmplDialectPython, 0)
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            match s.align
+                TmplAlignCenter => test.assert(true)
+                _               => test.assert(false)
+            test.assert(list.len(tmplspec.check_for(s, TmplDialectPrintf)) == 1)
+
+@test
+fn test_the_default_spec_is_the_one_no_spec_means() [io]
+    let d = tmplspec.default_spec()
+
+    test.case("a space fill, no width, no precision, no type")
+    test.assert(d.fill == 32)
+    test.assert(tmplspec.width_of(d) == 0 - 1)
+    test.assert(tmplspec.precision_of(d) == 0 - 1)
+    test.assert(d.alternate == false)
+    test.assert(d.zero_pad == false)
+    test.assert(tmplspec.count_arity(d) == 0)
+
+    test.case("and its alignment is the value's own default")
+    match d.align
+        TmplAlignDefault => test.assert(true)
+        _                => test.assert(false)
+
+@test
+fn test_a_count_can_come_from_an_argument() [io]
+    test.case("%*.*f consumes two arguments before its value")
+    match tmplspec.parse_spec("*.*f", TmplDialectPrintf, 0)
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            test.assert(tmplspec.count_arity(s) == 2)
+            match s.width
+                TmplCountFromNext => test.assert(true)
+                _                 => test.assert(false)
+
+            test.case("and resolving them makes an ordinary spec")
+            let fixed = tmplspec.resolve(s, 8, 3)
+            test.assert(tmplspec.width_of(fixed) == 8)
+            test.assert(tmplspec.precision_of(fixed) == 3)
+            test.assert(tmplspec.count_arity(fixed) == 0)
+
+    test.case("Rust names the argument instead")
+    match tmplspec.parse_spec(">width\$", TmplDialectRust, 0)
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            match s.width
+                TmplCountFromName(name) => test.assert(name == "width")
+                _                       => test.assert(false)
+
+    test.case("Python nests a field")
+    match tmplspec.parse_spec(">{w}", TmplDialectPython, 0)
+        Err(_) => test.assert(false)
+        Ok(s)  =>
+            match s.width
+                TmplCountFromName(_) => test.assert(true)
+                TmplCountFromArg(_)  => test.assert(true)
+                _                    => test.assert(false)
+
+@test
+fn test_the_conversion_decides_the_alignment_and_the_radix() [io]
+    test.case("numbers are right-aligned by default and strings are not")
+    test.assert(tmplspec.is_numeric(TmplKindDec))
+    test.assert(tmplspec.is_numeric(TmplKindFixed))
+    test.assert(tmplspec.is_numeric(TmplKindStr) == false)
+    match tmplspec.parse_spec("10d", TmplDialectPrintf, 0)
+        Ok(s)  =>
+            match tmplspec.effective_align(s)
+                TmplAlignRight => test.assert(true)
+                _              => test.assert(false)
+        Err(_) => test.assert(false)
+
+    test.case("the zero flag pads after the sign, which is what %08d of -42 means")
+    match tmplspec.parse_spec("08d", TmplDialectPrintf, 0)
+        Ok(s)  =>
+            match tmplspec.effective_align(s)
+                TmplAlignAfterSign => test.assert(true)
+                _                  => test.assert(false)
+        Err(_) => test.assert(false)
+
+    test.case("the radix is published so nobody writes the table twice")
+    test.assert(tmplspec.radix_of(TmplKindDec) == 10)
+    test.assert(tmplspec.radix_of(TmplKindHexLower) == 16)
+    test.assert(tmplspec.radix_of(TmplKindOct) == 8)
+    test.assert(tmplspec.radix_of(TmplKindBin) == 2)
+    test.assert(tmplspec.radix_of(TmplKindStr) == 0)
+
+    test.case("and the alternate form's prefix with it")
+    match tmplspec.parse_spec("#x", TmplDialectPrintf, 0)
+        Ok(s)  => test.assert(tmplspec.alternate_prefix(s) == "0x")
+        Err(_) => test.assert(false)
+
+@test
+fn test_every_refusal_points_into_the_string_a_person_wrote() [io]
+    test.case("an unknown conversion carries the byte it was")
+    match tmplspec.parse_spec("q", TmplDialectPrintf, 12)
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                TmplUnknownConversion(at, conversion) =>
+                    test.assert(conversion == 113)
+                    test.assert(at >= 12)
+                _                                     => test.assert(false)
+            test.assert(tmplerr.is_format_fault(e))
+            test.assert(tmplerr.offset_of(e) >= 12)
+            test.assert(e.message() != "")
+
+    test.case("and a caret line underlines it")
+    match tmplspec.parse_spec("q", TmplDialectPrintf, 0)
+        Ok(_)  => test.assert(false)
+        Err(e) => test.assert(tmplerr.underline(e, "%q") != "")
+
+    test.case("an argument fault is not a format fault")
+    test.assert(tmplerr.is_format_fault(TmplTooFewArguments(2, 1)) == false)
+    test.assert(tmplerr.offset_of(TmplTooFewArguments(2, 1)) == 0 - 1)
+
+@test
+fn test_the_device_arithmetic_is_the_padding_rules_in_integers() [io]
+    // Every one of these is what a firmware asks before it writes a
+    // byte, and every one is checked against what the host renderer
+    // must produce.
+    test.case("a field is the content widened, and a width never truncates")
+    test.assert(tmplspec.field_len(6, 3) == 6)
+    test.assert(tmplspec.field_len(2, 5) == 5)
+
+    test.case("right alignment puts the padding in front")
+    test.assert(tmplspec.pad_before(6, 3, 1) == 3)
+    test.assert(tmplspec.pad_after(6, 3, 1) == 0)
+
+    test.case("left alignment puts it behind")
+    test.assert(tmplspec.pad_before(6, 3, 0) == 0)
+    test.assert(tmplspec.pad_after(6, 3, 0) == 3)
+
+    test.case("centring puts the odd byte on the right, as Python and Rust do")
+    test.assert(tmplspec.pad_before(6, 3, 2) == 1)
+    test.assert(tmplspec.pad_after(6, 3, 2) == 2)
+
+    test.case("a field byte is either fill or a signal to ask the content")
+    test.assert(tmplspec.field_byte(0, 6, 3, 1, 32) == 32)
+    test.assert(tmplspec.content_index(0, 6, 3, 1) == 0 - 1)
+    test.assert(tmplspec.content_index(3, 6, 3, 1) == 0)
+    test.assert(tmplspec.content_index(5, 6, 3, 1) == 2)
+
+    test.case("the sign rule, which everybody gets slightly wrong")
+    test.assert(tmplspec.sign_byte(true, 0) == 45)
+    test.assert(tmplspec.sign_byte(false, 0) == 0 - 1)
+    test.assert(tmplspec.sign_byte(false, 1) == 43)
+    test.assert(tmplspec.sign_byte(false, 2) == 32)
+
+    test.case("and a multi-byte fill costs what UTF-8 says it costs")
+    test.assert(tmplspec.fill_len(32) == 1)
+    test.assert(tmplspec.fill_len(0x00B7) == 2)
