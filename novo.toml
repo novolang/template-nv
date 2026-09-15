@@ -1,6 +1,6 @@
 [package]
 name        = "template-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "The small, safe string-template family that is not Jinja: ${name} and {{name}} substitution with the escaping policy as a value, and three format-spec dialects — C's printf, Python's str.format mini-language and Rust's format! — parsed into ONE typed spec and rendered by one renderer into a caller's buffer.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 

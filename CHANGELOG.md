@@ -5,6 +5,10 @@ All notable changes to template-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.0.2 — 2026-09-15
+
+README rewritten to the package README style guide (docs/writing-a-readme.md); no change to the interface.
+
 ## 0.0.1 — 2026-09-11
 
 The **interface**: every signature and every effect row, and no bodies.
@@ -53,3 +57,27 @@ The **interface**: every signature and every effect row, and no bodies.
   named rather than worked around.
 - **One dependency**, numfmt-nv, which is what makes the device claim
   possible.
+
+### Design notes
+
+Why three format languages are one package: they are three syntaxes
+over one semantics. `%-08.3f`, `{:<08.3f}` and `{:<08.3}` all say
+left-align, zero-fill, at least eight columns, three decimals, fixed
+notation. Three parsers and one renderer follow from that, with
+`TmplSpec` as the value between them. A program can then read a format
+from configuration in whichever dialect its users know, the renderer's
+suite is written once, and the twenty edge cases of padding are decided
+in one place rather than in three that drift.
+
+Where the line with tera-nv falls: the moment a template needs a
+condition it needs tera-nv, and the moment it does not, this is
+cheaper to read, cheaper to audit and impossible to make recurse.
+Python keeps `string.Template` beside Jinja for the same reason. The
+substitution here deliberately does not rescan its own output, which
+tera-nv's interface records as a defect in what it graduated from.
+
+Building a `tmplval` tree by hand costs one line per field, and that
+cost is named rather than worked around. A run-time walk over a
+serialisable value would give the library the fields a sample happened
+to populate and silently miss the rest, which is the limit openapi-nv's
+interface records for schema derivation.
