@@ -257,7 +257,8 @@ because that is the spelling a value-tier caller can use. Alignment is
   shortest-round-trip float conversion, and neither is small. Its
   `digits.digit_count` and `digits.digit_byte` are the allocation-free
   shape this package's device half is built on, so the dependency is
-  what makes the device claim possible.
+  what lets those functions build for a microcontroller with no heap
+  allocator.
 - [tera-nv](https://novo-lang.org/packages/tera-nv) is the full
   template engine, with conditions, loops, filters and inheritance, and
   it escapes its output by default because its output is usually a web
@@ -298,8 +299,9 @@ truncates a string, that a centred field puts the odd byte on the
 right, and that a substituted value containing template syntax is not
 rescanned.
 
-`tests/embedded_probe.nv` is not a test suite. It is the device claim
-as a program, built for a Cortex-M4.
+`tests/embedded_probe.nv` is not a test suite. It is the program that
+shows the `@tier(embedded)` functions build for a microcontroller with
+no heap allocator, built for a Cortex-M4.
 
 The tests compile today and fail at run, each on the
 `not implemented: template-nv.<module>.<fn>` panic that is its body.
